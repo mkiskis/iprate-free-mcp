@@ -5,13 +5,14 @@ from __future__ import annotations
 import os
 import re
 import unicodedata
+from datetime import UTC, datetime
 from typing import Any, Literal
 from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from iprate.mcp import MCP_SERVER_VERSION
-from iprate.mcp.assets import ReleaseSnapshot, StaticAssetError, load_release
+from iprate.mcp.assets import ReleaseSnapshot, StaticAssetError, load_release, normalise_text
 
 Status = Literal[
     "ok",
@@ -99,10 +100,41 @@ def _profile_url(entity_type: str, slug: str) -> str:
     return f"https://iprate.eu/{ENTITY_PATH[entity_type]}/{quote(slug, safe='')}/"
 
 
-def _normalise_text(value: str) -> str:
-    decomposed = unicodedata.normalize("NFKD", value)
-    without_marks = "".join(char for char in decomposed if not unicodedata.combining(char))
-    return " ".join(re.findall(r"[\w]+", without_marks.casefold(), flags=re.UNICODE))
+_normalise_text = normalise_text
+
+STALE_AFTER_DAYS_DEFAULT = 21.0
+
+
+def _stale_after_days() -> float:
+    try:
+        value = float(os.environ.get("IPRATE_MCP_STALE_AFTER_DAYS", ""))
+    except ValueError:
+        return STALE_AFTER_DAYS_DEFAULT
+    return value if value > 0 else STALE_AFTER_DAYS_DEFAULT
+
+
+def _release_age_days(release: ReleaseSnapshot) -> float | None:
+    if not release.as_of:
+        return None
+    try:
+        as_of = datetime.fromisoformat(str(release.as_of).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if as_of.tzinfo is None:
+        as_of = as_of.replace(tzinfo=UTC)
+    return max(0.0, (datetime.now(UTC) - as_of).total_seconds() / 86400.0)
+
+
+def _ok_status(release: ReleaseSnapshot) -> tuple[Status, list[str]]:
+    """Return "ok", or "stale" with a limitation note when the release is old."""
+    age = _release_age_days(release)
+    threshold = _stale_after_days()
+    if age is not None and age > threshold:
+        return "stale", [
+            f"The selected static release is {age:.0f} days old (stale threshold {threshold:.0f} days); "
+            "a newer release may exist."
+        ]
+    return "ok", []
 
 
 def _safe_text(value: Any, *, limit: int = 512) -> str | None:
@@ -184,12 +216,24 @@ def _cohort_matches(
         if not set(nice_classes).intersection(published):
             return False
     if client_key:
-        published_clients = [
-            _normalise_text(str(item.get("display_name") or "")) for item in cohort.get("top_clients") or []
-        ]
+        published_clients = cohort.get("client_keys")
+        if published_clients is None:
+            published_clients = [
+                _normalise_text(str(item.get("display_name") or "")) for item in cohort.get("top_clients") or []
+            ]
         if not any(client_key in value for value in published_clients):
             return False
     return True
+
+
+def _cohort_priority(cohort: dict[str, Any]) -> tuple[bool, bool, int, float]:
+    """Order cohorts: long window first, then published rank, then score."""
+    return (
+        cohort.get("window") != "long",
+        cohort.get("publication_rank") is None,
+        cohort.get("publication_rank") or 10**9,
+        -(float(cohort.get("score") or 0)),
+    )
 
 
 def _best_matching_cohort(
@@ -217,15 +261,7 @@ def _best_matching_cohort(
     ]
     if not matches:
         return None
-    return min(
-        matches,
-        key=lambda cohort: (
-            cohort.get("window") != "long",
-            cohort.get("publication_rank") is None,
-            cohort.get("publication_rank") or 10**9,
-            -(float(cohort.get("score") or 0)),
-        ),
-    )
+    return min(matches, key=_cohort_priority)
 
 
 def _public_cohort(cohort: dict[str, Any]) -> dict[str, Any]:
@@ -310,8 +346,10 @@ def find_ip_representatives_result(
         for representative in release.catalog.get("representatives") or []:
             if representative_type != "both" and representative.get("representative_type") != representative_type:
                 continue
-            if name_key and name_key not in _normalise_text(str(representative.get("name") or "")):
-                continue
+            if name_key:
+                rep_key = representative.get("name_key") or _normalise_text(str(representative.get("name") or ""))
+                if name_key not in rep_key:
+                    continue
             cohort = _best_matching_cohort(
                 representative,
                 jurisdiction=jurisdiction,
@@ -329,7 +367,7 @@ def find_ip_representatives_result(
                 item[1].get("publication_rank") is None,
                 item[1].get("publication_rank") or 10**9,
                 -(float(item[1].get("score") or 0)),
-                _normalise_text(str(item[0].get("name") or "")),
+                item[0].get("name_key") or _normalise_text(str(item[0].get("name") or "")),
             )
         )
         assets = ["mcp/v0.1/catalog.json"]
@@ -348,13 +386,13 @@ def find_ip_representatives_result(
                 coverage=coverage,
                 source_urls=[_asset_url("manifest.json")],
             )
-        limitations: list[str] = []
+        status, limitations = _ok_status(release)
         if classes:
             limitations.append("Nice-class matching covers only classes published as leading classes in profiles.")
         if client_key:
             limitations.append("Client matching covers only names published as leading clients in profiles.")
         return _response(
-            "ok",
+            status,
             release=release,
             data={"items": [_public_representative(*item) for item in matches[:limit]]},
             coverage=coverage,
@@ -415,9 +453,11 @@ def get_ip_representative_profile_result(
             )
         representative = candidates[0]
         entity_type = str(representative["representative_type"])
-        public_cohorts = [_public_cohort(item) for item in (representative.get("cohorts") or [])[:5]]
+        ordered_cohorts = sorted(representative.get("cohorts") or [], key=_cohort_priority)
+        public_cohorts = [_public_cohort(item) for item in ordered_cohorts[:5]]
+        status, stale_limitations = _ok_status(release)
         return _response(
-            "ok",
+            status,
             release=release,
             data={
                 "representative_type": entity_type,
@@ -431,7 +471,7 @@ def get_ip_representative_profile_result(
                 "text_provenance": "quoted_untrusted_register_data",
             },
             coverage=coverage,
-            limitations=["At most five released cohort summaries are returned."],
+            limitations=["At most five released cohort summaries are returned.", *stale_limitations],
             source_urls=[
                 _profile_url(entity_type, str(representative["slug"])),
                 _asset_url("manifest.json"),
@@ -518,8 +558,9 @@ def get_ip_market_snapshot_result(
                 }
             )
         assets = [stats_path, firms_path]
+        status, stale_limitations = _ok_status(release)
         return _response(
-            "ok",
+            status,
             release=release,
             data={
                 "jurisdiction": normalised_jurisdiction,
@@ -536,6 +577,7 @@ def get_ip_market_snapshot_result(
                 right_type=right_type,
                 tier=tier,
             ),
+            limitations=stale_limitations,
             source_urls=[_asset_url(path) for path in assets],
         )
     except StaticAssetError as exc:
@@ -607,8 +649,9 @@ def get_iprate_coverage_result(
             )
         analytics = release.read_json("analytics_stats.json", verify_declared=True)
         hold_state = "partial" if release.manifest.get("status") in {"warning", "degraded"} else "held"
+        status, stale_limitations = _ok_status(release)
         return _response(
-            "ok",
+            status,
             release=release,
             data={
                 "hold_state": hold_state,
@@ -631,6 +674,7 @@ def get_iprate_coverage_result(
                 right_type=right_type,
                 tier=tier,
             ),
+            limitations=stale_limitations,
             source_urls=[_asset_url(path) for path in assets],
         )
     except StaticAssetError as exc:

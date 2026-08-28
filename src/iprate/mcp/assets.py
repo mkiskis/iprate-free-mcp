@@ -5,15 +5,28 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
+import threading
+import unicodedata
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+CATALOG_PATH = "mcp/v0.1/catalog.json"
+CATALOG_SCHEMA_VERSION = "0.2"
+
 
 class StaticAssetError(RuntimeError):
     """The selected static release is missing, corrupt, or internally inconsistent."""
+
+
+def normalise_text(value: str) -> str:
+    """Casefolded, accent-stripped, token-joined key for matching released text."""
+    decomposed = unicodedata.normalize("NFKD", value)
+    without_marks = "".join(char for char in decomposed if not unicodedata.combining(char))
+    return " ".join(re.findall(r"[\w]+", without_marks.casefold(), flags=re.UNICODE))
 
 
 def asset_root(path: str | Path | None = None) -> Path:
@@ -52,16 +65,67 @@ def _read_json(root: Path, relative_path: str) -> Any:
     return _cached_json(str(target), stat.st_mtime_ns, stat.st_size)
 
 
-def _sha256_prefix(root: Path, relative_path: str, length: int = 8) -> str:
-    target = _safe_path(root, relative_path)
+_catalog_lock = threading.Lock()
+_catalog_slot: tuple[tuple[str, int, int], Any] | None = None
+
+
+def _read_catalog_json(root: Path) -> Any:
+    """Read the MCP catalogue through a dedicated single-entry cache.
+
+    The parsed catalogue holds every released representative — hundreds of
+    megabytes at production scale. The shared lru cache would keep a
+    superseded release's parse alive next to its replacement and overshoot
+    the container memory limit, so the catalogue gets exactly one slot and
+    the old parse is dropped before the new one is loaded.
+    """
+    global _catalog_slot
+    target = _safe_path(root, CATALOG_PATH)
+    try:
+        stat = target.stat()
+    except OSError as exc:
+        raise StaticAssetError(f"Required static asset is unavailable: {CATALOG_PATH}") from exc
+    key = (str(target), stat.st_mtime_ns, stat.st_size)
+    with _catalog_lock:
+        if _catalog_slot is not None and _catalog_slot[0] == key:
+            return _catalog_slot[1]
+        _catalog_slot = None
+        try:
+            parsed = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise StaticAssetError(f"Cannot read static JSON asset: {CATALOG_PATH}") from exc
+        _catalog_slot = (key, parsed)
+        return parsed
+
+
+def clear_caches() -> None:
+    """Drop every cached parse: small assets, file hashes, and the catalogue slot."""
+    global _catalog_slot
+    _cached_json.cache_clear()
+    _hash_file.cache_clear()
+    with _catalog_lock:
+        _catalog_slot = None
+
+
+@lru_cache(maxsize=256)
+def _hash_file(path: str, modified_ns: int, size: int) -> str:
+    del modified_ns, size
     digest = hashlib.sha256()
     try:
-        with target.open("rb") as handle:
+        with open(path, "rb") as handle:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
     except OSError as exc:
+        raise StaticAssetError(f"Cannot hash static asset: {path}") from exc
+    return digest.hexdigest()
+
+
+def _sha256_prefix(root: Path, relative_path: str, length: int = 8) -> str:
+    target = _safe_path(root, relative_path)
+    try:
+        stat = target.stat()
+    except OSError as exc:
         raise StaticAssetError(f"Cannot hash static asset: {relative_path}") from exc
-    return digest.hexdigest()[:length]
+    return _hash_file(str(target), stat.st_mtime_ns, stat.st_size)[:length]
 
 
 def declared_checksum(manifest: dict[str, Any], relative_path: str) -> str | None:
@@ -114,10 +178,10 @@ def load_release(path: str | Path | None = None) -> ReleaseSnapshot:
     manifest = _read_json(root, "manifest.json")
     if not isinstance(manifest, dict) or not manifest.get("release_id"):
         raise StaticAssetError("manifest.json has no release_id")
-    catalog = _read_json(root, "mcp/v0.1/catalog.json")
+    catalog = _read_catalog_json(root)
     if not isinstance(catalog, dict):
         raise StaticAssetError("MCP catalogue is not a JSON object")
-    if catalog.get("schema_version") != "0.1":
+    if catalog.get("schema_version") != CATALOG_SCHEMA_VERSION:
         raise StaticAssetError("Unsupported MCP catalogue schema")
     if catalog.get("release_id") != manifest.get("release_id"):
         raise StaticAssetError("MCP catalogue and manifest belong to different releases")
@@ -142,7 +206,11 @@ def _cohort_entry(key: str, value: Any) -> dict[str, Any] | None:
         return None
     denominators = scores.get("denominators") or {}
     top_classes = value.get("top_classes") or []
-    top_clients = value.get("top_clients") or []
+    clients = [
+        item
+        for item in (value.get("top_clients") or [])[:5]
+        if isinstance(item, dict) and item.get("display_name")
+    ]
     return {
         "jurisdiction": country.upper(),
         "right_type": right_type,
@@ -173,9 +241,9 @@ def _cohort_entry(key: str, value: Any) -> dict[str, Any] | None:
                 "share_pct": item.get("share_pct"),
                 "rank": item.get("rank"),
             }
-            for item in top_clients[:5]
-            if isinstance(item, dict) and item.get("display_name")
+            for item in clients
         ],
+        "client_keys": [normalise_text(str(item.get("display_name") or "")) for item in clients],
     }
 
 
@@ -193,6 +261,7 @@ def _catalog_representative(root: Path, entity_type: str, slug: str) -> dict[str
         "representative_type": entity_type,
         "representative_id": profile.get("id"),
         "name": profile.get("name"),
+        "name_key": normalise_text(str(profile.get("name") or "")),
         "slug": profile.get("slug") or slug,
         "home_country_code": profile.get("country_code"),
         "city": profile.get("city"),
@@ -237,7 +306,7 @@ def build_catalog(
             raise StaticAssetError(f"Static {key} count mismatch: expected {expected}, got {actual}")
 
     catalog = {
-        "schema_version": "0.1",
+        "schema_version": CATALOG_SCHEMA_VERSION,
         "release_id": manifest["release_id"],
         "generated_at": manifest.get("generated_at") or manifest.get("updated_at"),
         "source_checksums": {
@@ -246,7 +315,7 @@ def build_catalog(
         "representative_counts": actual_counts,
         "representatives": representatives,
     }
-    target = Path(output_path) if output_path else root / "mcp/v0.1/catalog.json"
+    target = Path(output_path) if output_path else root / CATALOG_PATH
     target = target.resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)

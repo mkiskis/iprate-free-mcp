@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+import json
+import os
+import threading
+import time
+from collections import OrderedDict, deque
+from typing import Annotated, Any, Literal
 
+import anyio
 from mcp_types import ToolAnnotations
 from pydantic import Field
 
 from iprate.mcp import MCP_SERVER_VERSION
+from iprate.mcp.assets import StaticAssetError, load_release
 from iprate.mcp.service import (
     MCPResponse,
     find_ip_representatives_result,
@@ -17,6 +24,9 @@ from iprate.mcp.service import (
 )
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
+
+MCP_HTTP_PATH = "/mcp"
+HEALTH_PATH = "/healthz"
 
 READ_ONLY = ToolAnnotations(
     readOnlyHint=True,
@@ -176,32 +186,159 @@ def get_iprate_coverage(
     return get_iprate_coverage_result(jurisdiction=jurisdiction, right_type=right_type, tier=tier)
 
 
-mcp_http_app = mcp.streamable_http_app(
-    streamable_http_path="/mcp",
-    json_response=True,
-    stateless_http=True,
-    max_request_body_size=256 * 1024,
-    host="mcp.iprate.eu",
-    transport_security=TransportSecuritySettings(
-        enable_dns_rebinding_protection=True,
-        allowed_hosts=[
-            "mcp.iprate.eu",
-            "mcp.iprate.eu:*",
-            "app.iprate.eu",
-            "app.iprate.eu:*",
-            "api-tunnel.iprate.eu",
-            "api-tunnel.iprate.eu:*",
-            "testserver",
-            "localhost:*",
-            "127.0.0.1:*",
-        ],
-        allowed_origins=[
-            "https://mcp.iprate.eu",
-            "https://iprate.eu",
-            "https://chatgpt.com",
-            "https://claude.ai",
-            "http://localhost:*",
-            "http://127.0.0.1:*",
-        ],
-    ),
-)
+async def _send_json(
+    send: Any,
+    status: int,
+    payload: dict[str, Any],
+    extra_headers: tuple[tuple[bytes, bytes], ...] = (),
+) -> None:
+    body = json.dumps(payload).encode("utf-8")
+    headers = [
+        (b"content-type", b"application/json"),
+        (b"content-length", str(len(body)).encode("ascii")),
+        *extra_headers,
+    ]
+    await send({"type": "http.response.start", "status": status, "headers": headers})
+    await send({"type": "http.response.body", "body": body})
+
+
+class PublicEndpointMiddleware:
+    """Anonymous rate control and a static-release liveness probe.
+
+    POST calls to the MCP path are rate limited per anonymous client with an
+    in-memory sliding window — no persistent user state. A limited call gets
+    HTTP 429 with a ``rate_limited`` body and a Retry-After header; results
+    are never silently truncated. GET /healthz reports whether one internally
+    consistent static release is currently servable.
+    """
+
+    def __init__(self, app: Any, *, requests_per_minute: int, max_tracked_clients: int = 10000) -> None:
+        self.app = app
+        self.requests_per_minute = requests_per_minute
+        self.max_tracked_clients = max_tracked_clients
+        self._buckets: OrderedDict[str, deque[float]] = OrderedDict()
+        self._lock = threading.Lock()
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+        if path == HEALTH_PATH:
+            await self._healthz(send)
+            return
+        if path == MCP_HTTP_PATH and scope.get("method") == "POST":
+            allowed, retry_after = self._allow(self._client_key(scope), time.monotonic())
+            if not allowed:
+                await _send_json(
+                    send,
+                    429,
+                    {
+                        "status": "rate_limited",
+                        "message": "Anonymous rate limit exceeded; retry after the indicated delay.",
+                        "retry_after_seconds": retry_after,
+                    },
+                    extra_headers=((b"retry-after", str(retry_after).encode("ascii")),),
+                )
+                return
+        await self.app(scope, receive, send)
+
+    def _client_key(self, scope: dict[str, Any]) -> str:
+        # Cloudflare Tunnel terminates public traffic and names the real
+        # client; direct in-network callers fall back to the peer address.
+        for header_name, header_value in scope.get("headers") or ():
+            if header_name == b"cf-connecting-ip":
+                return header_value.decode("latin-1")
+        client = scope.get("client")
+        return str(client[0]) if client else "unknown"
+
+    def _allow(self, key: str, now: float) -> tuple[bool, int]:
+        limit = self.requests_per_minute
+        if limit <= 0:
+            return True, 0
+        with self._lock:
+            bucket = self._buckets.get(key)
+            if bucket is None:
+                bucket = deque()
+                self._buckets[key] = bucket
+                while len(self._buckets) > self.max_tracked_clients:
+                    self._buckets.popitem(last=False)
+            else:
+                self._buckets.move_to_end(key)
+            cutoff = now - 60.0
+            while bucket and bucket[0] <= cutoff:
+                bucket.popleft()
+            if len(bucket) >= limit:
+                return False, max(1, int(bucket[0] + 60.0 - now) + 1)
+            bucket.append(now)
+            return True, 0
+
+    async def _healthz(self, send: Any) -> None:
+        try:
+            release = await anyio.to_thread.run_sync(load_release)
+        except StaticAssetError as exc:
+            await _send_json(
+                send,
+                503,
+                {
+                    "status": "source_unavailable",
+                    "error_type": type(exc).__name__,
+                    "server_version": MCP_SERVER_VERSION,
+                },
+            )
+            return
+        await _send_json(
+            send,
+            200,
+            {
+                "status": "ok",
+                "release_id": release.release_id,
+                "as_of": release.as_of,
+                "server_version": MCP_SERVER_VERSION,
+            },
+        )
+
+
+def _requests_per_minute() -> int:
+    try:
+        return int(os.environ.get("IPRATE_MCP_RATE_LIMIT_PER_MINUTE", ""))
+    except ValueError:
+        return 120
+
+
+def build_http_app(requests_per_minute: int | None = None) -> PublicEndpointMiddleware:
+    """Build a fresh transport app; each carries its own HTTP session manager."""
+    inner = mcp.streamable_http_app(
+        streamable_http_path=MCP_HTTP_PATH,
+        json_response=True,
+        stateless_http=True,
+        max_request_body_size=256 * 1024,
+        host="mcp.iprate.eu",
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=[
+                "mcp.iprate.eu",
+                "mcp.iprate.eu:*",
+                "app.iprate.eu",
+                "app.iprate.eu:*",
+                "api-tunnel.iprate.eu",
+                "api-tunnel.iprate.eu:*",
+                "testserver",
+                "localhost:*",
+                "127.0.0.1:*",
+            ],
+            allowed_origins=[
+                "https://mcp.iprate.eu",
+                "https://iprate.eu",
+                "https://chatgpt.com",
+                "https://claude.ai",
+                "http://localhost:*",
+                "http://127.0.0.1:*",
+            ],
+        ),
+    )
+    limit = _requests_per_minute() if requests_per_minute is None else requests_per_minute
+    return PublicEndpointMiddleware(inner, requests_per_minute=limit)
+
+
+mcp_http_app = build_http_app()

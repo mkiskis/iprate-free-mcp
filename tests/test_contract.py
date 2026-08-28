@@ -9,9 +9,10 @@ from unittest.mock import patch
 import pytest
 from starlette.testclient import TestClient
 
-from iprate.mcp.assets import _cached_json, build_catalog
+from iprate.mcp import assets as assets_module
+from iprate.mcp.assets import build_catalog, clear_caches, load_release
 from iprate.mcp.catalog_cli import main as catalog_main
-from iprate.mcp.server import mcp, mcp_http_app
+from iprate.mcp.server import build_http_app, mcp, mcp_http_app
 from iprate.mcp.service import (
     find_ip_representatives_result,
     get_ip_market_snapshot_result,
@@ -59,7 +60,10 @@ def static_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
             "slug": firm_slug,
             "city": "Vilnius",
             "country_code": "LT",
-            "cohorts": {"lt|tm|national|long": _cohort(rank=1, score=91.2, client="ACME Ltd")},
+            "cohorts": {
+                "lt|tm|national|recent": _cohort(rank=None, score=70.0, client="Beta Corp"),
+                "lt|tm|national|long": _cohort(rank=1, score=91.2, client="ACME Ltd"),
+            },
         },
     )
     _write_json(
@@ -147,7 +151,7 @@ def static_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         },
     )
     build_catalog(root)
-    _cached_json.cache_clear()
+    clear_caches()
     monkeypatch.setenv("IPRATE_MCP_ASSET_ROOT", str(root))
     monkeypatch.setenv("IPRATE_MCP_ASSET_BASE_URL", "https://assets.example/data/v1")
     return root
@@ -228,7 +232,7 @@ def test_checksum_mismatch_fails_closed(static_release: Path) -> None:
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["data"]["applications_total"] = 778
     _write_json(path, payload)
-    _cached_json.cache_clear()
+    clear_caches()
     result = get_ip_market_snapshot_result(
         jurisdiction="LT",
         right_type="trademark",
@@ -244,7 +248,7 @@ def test_mixed_release_catalog_fails_closed(static_release: Path) -> None:
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["release_id"] = "different-release"
     _write_json(path, payload)
-    _cached_json.cache_clear()
+    clear_caches()
     result = get_iprate_coverage_result()
     assert result.status == "source_unavailable"
 
@@ -285,3 +289,78 @@ def test_catalog_module_entrypoint_invokes_builder(static_release: Path, capsys:
     if os.name != "nt":
         assert output.stat().st_mode & 0o777 == 0o644
     assert "Built static MCP catalogue for test-release" in capsys.readouterr().out
+
+
+def test_catalog_precomputes_search_keys(static_release: Path) -> None:
+    catalog = json.loads((static_release / "mcp" / "v0.1" / "catalog.json").read_text(encoding="utf-8"))
+    assert catalog["schema_version"] == "0.2"
+    firm = next(item for item in catalog["representatives"] if item["representative_type"] == "firm")
+    assert firm["name_key"] == "example ip"
+    long_cohort = next(cohort for cohort in firm["cohorts"] if cohort["window"] == "long")
+    assert long_cohort["client_keys"] == ["acme ltd"]
+
+
+def test_profile_returns_long_ranked_cohort_first(static_release: Path) -> None:
+    result = get_ip_representative_profile_result(slug="lt-example-ip")
+    assert result.status == "ok"
+    first = result.data["released_cohorts"][0]
+    assert first["window"] == "long"
+    assert first["published_rating"]["rank"] == 1
+
+
+def test_old_release_reports_stale(static_release: Path) -> None:
+    manifest_path = static_release / "manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["generated_at"] = "2026-01-01T00:00:00Z"
+    _write_json(manifest_path, payload)
+    clear_caches()
+    result = get_iprate_coverage_result()
+    assert result.status == "stale"
+    assert any("days old" in item for item in result.limitations)
+
+
+def test_catalog_cache_keeps_single_parse(static_release: Path) -> None:
+    first = load_release()
+    assert load_release().catalog is first.catalog
+    build_catalog(static_release)
+    refreshed = load_release()
+    assert refreshed.catalog is not first.catalog
+    assert assets_module._catalog_slot is not None
+    assert assets_module._catalog_slot[1] is refreshed.catalog
+
+
+def test_rate_limited_calls_get_429(static_release: Path) -> None:
+    request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "contract-test", "version": "1.0"},
+        },
+    }
+    headers = {"Accept": "application/json, text/event-stream"}
+    with TestClient(build_http_app(requests_per_minute=2)) as client:
+        statuses = [client.post("/mcp", json=request, headers=headers).status_code for _ in range(2)]
+        limited = client.post("/mcp", json=request, headers=headers)
+    assert statuses == [200, 200]
+    assert limited.status_code == 429
+    assert limited.json()["status"] == "rate_limited"
+    assert int(limited.headers["retry-after"]) >= 1
+
+
+def test_healthz_reports_current_release(static_release: Path) -> None:
+    with TestClient(build_http_app()) as client:
+        response = client.get("/healthz")
+    assert response.status_code == 200
+    assert response.json()["release_id"] == "test-release"
+
+
+def test_healthz_fails_closed_without_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("IPRATE_MCP_ASSET_ROOT", str(tmp_path))
+    clear_caches()
+    with TestClient(build_http_app()) as client:
+        response = client.get("/healthz")
+    assert response.status_code == 503
+    assert response.json()["status"] == "source_unavailable"

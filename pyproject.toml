@@ -1,6 +1,6 @@
 [project]
 name = "iprate-free-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "Open adapter for IPRATE's free public European IP analytics MCP server"
 readme = "README.md"
 license = "Apache-2.0"
@@ -22,6 +22,7 @@ dev = [
 [project.scripts]
 iprate-free-mcp = "iprate.mcp.cli:main"
 iprate-free-mcp-build-catalog = "iprate.mcp.catalog_cli:main"
+iprate-free-mcp-refresh-release = "iprate.mcp.refresh:main"
 
 [build-system]
 requires = ["hatchling"]
