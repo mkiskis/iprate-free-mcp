@@ -53,6 +53,18 @@ iprate-free-mcp
 
 The local endpoint is `http://127.0.0.1:8000/mcp`.
 
+## Production container
+
+`compose.yaml` runs the server as an unprivileged, read-only container. It mounts only
+the completed static release, drops all Linux capabilities, and joins the existing
+`runtime_default` network for Cloudflare Tunnel routing:
+
+```bash
+docker compose up -d --build
+```
+
+The service publishes no host port and receives no database or application secrets.
+
 Documentation: <https://iprate.eu/developers/mcp/>
 
 ## Licence
