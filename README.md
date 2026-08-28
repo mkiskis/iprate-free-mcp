@@ -15,14 +15,15 @@ The adapter exposes bounded selections from one completed IPRATE static release:
 
 It has no database, ORM, SQL, database credential, application-API fallback, or private
 IPRATE package dependency. Ratings and statistics are copied from released JSON assets;
-they are never recomputed by the MCP service.
+they are never recomputed by the MCP service. Anonymous calls are rate limited in memory
+(HTTP 429 with `Retry-After`; results are never silently truncated), and `GET /healthz`
+reports whether one internally consistent release is servable.
 
 ## Static input
 
-Set `IPRATE_MCP_ASSET_ROOT` to a completed `/data/v1` directory containing
-`manifest.json`, the released profile/cohort assets, and
-`mcp/v0.1/catalog.json`. Set `IPRATE_MCP_ASSET_BASE_URL` to the public URL used in
-source citations.
+Set `IPRATE_MCP_ASSET_ROOT` to a completed `/data/v1`-shaped release directory containing
+`manifest.json`, the released cohort and global assets, and `mcp/v0.1/catalog.json`. Set
+`IPRATE_MCP_ASSET_BASE_URL` to the public URL used in source citations.
 
 The catalogue is derived only from static profile assets:
 
@@ -33,6 +34,18 @@ iprate-free-mcp-build-catalog /path/to/data/v1
 The builder fails if required indexes are missing, checksums differ, profile counts do
 not match the release manifest, or a profile asset is unreadable. It never imports or
 connects to IPRATE's database, API, models, or pipeline.
+
+## Release snapshots
+
+In production the adapter never reads the live, mutating export tree. A refresher
+(`iprate-free-mcp-refresh-release`) watches the live `manifest.json` and, when a new
+`release_id` appears, copies every manifest-declared asset into an immutable per-release
+snapshot (checksum-verified against the manifest), builds the catalogue inside that
+snapshot, and atomically repoints a `current` symlink. The server keeps serving the
+previous complete release until the next one is activated; a release that changes while
+it is being snapshotted is abandoned and retried on the next pass. Snapshots contain no
+entity profile files — profile data enters only through the derived catalogue — and the
+catalogue is never written into the publicly served tree.
 
 ## Development
 
@@ -51,19 +64,27 @@ export IPRATE_MCP_ASSET_BASE_URL=https://iprate.eu/data/v1
 iprate-free-mcp
 ```
 
-The local endpoint is `http://127.0.0.1:8000/mcp`.
+The local endpoint is `http://127.0.0.1:8000/mcp`; liveness is `GET /healthz`.
 
-## Production container
+## Production containers
 
-`compose.yaml` runs the server as an unprivileged, read-only container. It mounts only
-the completed static release, drops all Linux capabilities, and joins the existing
-`runtime_default` network for Cloudflare Tunnel routing:
+`compose.yaml` runs two hardened services built from the same image:
+
+- `mcp` — the server, unprivileged and read-only, mounting only the snapshot directory
+  (read-only) and serving `IPRATE_MCP_ASSET_ROOT=/data/current`. It joins the existing
+  `runtime_default` network for Cloudflare Tunnel routing and publishes no host port.
+- `refresher` — the snapshot builder, with `network_mode: none`, mounting the live
+  export tree read-only and the snapshot directory read-write.
 
 ```bash
 docker compose up -d --build
 ```
 
-The service publishes no host port and receives no database or application secrets.
+Environment overrides: `IPRATE_STATIC_ROOT` (live export tree),
+`IPRATE_MCP_RELEASES_ROOT` (snapshot directory), `IPRATE_MCP_REFRESH_UID`/`GID`
+(owner of the snapshot directory), `IPRATE_MCP_RATE_LIMIT_PER_MINUTE` (default 120),
+`IPRATE_MCP_STALE_AFTER_DAYS` (default 21). Neither service receives a database or
+application secret.
 
 Documentation: <https://iprate.eu/developers/mcp/>
 
