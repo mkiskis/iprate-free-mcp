@@ -3,11 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from starlette.testclient import TestClient
 
 from iprate.mcp.assets import _cached_json, build_catalog
+from iprate.mcp.catalog_cli import main as catalog_main
 from iprate.mcp.server import mcp, mcp_http_app
 from iprate.mcp.service import (
     find_ip_representatives_result,
@@ -272,3 +274,11 @@ def test_package_has_no_database_or_private_iprate_dependency() -> None:
     combined = "\n".join(path.read_text(encoding="utf-8") for path in source_root.rglob("*.py"))
     forbidden = ["sqlalchemy", "psycopg", "sqlite3", "DATABASE_URL", "iprate.pipeline", "iprate.models", "iprate.api"]
     assert not [token for token in forbidden if token in combined]
+
+
+def test_catalog_module_entrypoint_invokes_builder(static_release: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    output = static_release / "mcp" / "v0.1" / "second-catalog.json"
+    with patch("sys.argv", ["iprate.mcp.catalog_cli", str(static_release), "--output", str(output)]):
+        catalog_main()
+    assert output.is_file()
+    assert "Built static MCP catalogue for test-release" in capsys.readouterr().out

@@ -19,3 +19,7 @@ def main() -> None:
         f"Built static MCP catalogue for {catalog['release_id']}: "
         f"{counts['firms']} firms, {counts['attorneys']} attorneys"
     )
+
+
+if __name__ == "__main__":
+    main()
