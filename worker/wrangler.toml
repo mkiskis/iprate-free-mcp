@@ -1,0 +1,24 @@
+# Production configuration for the public MCP Worker.
+name = "iprate-mcp"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+workers_dev = true
+
+[observability]
+enabled = true
+
+[vars]
+ASSET_BASE_URL = "https://iprate.eu/data/v1"
+STALE_AFTER_DAYS = "21"
+
+[[r2_buckets]]
+binding = "RELEASES"
+bucket_name = "iprate-mcp"
+
+# Anonymous per-client rate control (spec §7). Returns HTTP 429 + Retry-After;
+# results are never silently truncated.
+[[unsafe.bindings]]
+name = "RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 120, period = 60 }

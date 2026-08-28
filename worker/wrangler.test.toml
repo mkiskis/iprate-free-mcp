@@ -1,0 +1,13 @@
+# Test configuration: same bindings as production minus the rate-limiter
+# (exercised in tests through an injected fake instead).
+name = "iprate-mcp"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+
+[vars]
+ASSET_BASE_URL = "https://iprate.eu/data/v1"
+STALE_AFTER_DAYS = "21"
+
+[[r2_buckets]]
+binding = "RELEASES"
+bucket_name = "iprate-mcp"
