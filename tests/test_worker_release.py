@@ -231,6 +231,12 @@ def test_run_once_activates_then_noops(live_tree: Path) -> None:
     assert run_once(live_tree, store, settle_seconds=0) is None
     assert len(store.put_order) == puts_before
 
+    # force rebuilds the same release under a fresh build prefix
+    assert run_once(live_tree, store, settle_seconds=0, force=True) == "release-a"
+    new_pointer = json.loads(store.objects[POINTER_KEY])
+    assert new_pointer["prefix"] != prefix
+    assert new_pointer["release_id"] == "release-a"
+
 
 def test_release_bump_keeps_two_builds(live_tree: Path) -> None:
     store = FakeStore()

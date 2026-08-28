@@ -356,13 +356,16 @@ def run_once(
     store: ObjectStore,
     *,
     settle_seconds: float = 5.0,
+    force: bool = False,
 ) -> str | None:
     """Build, upload, and activate one release. Silent no-op when current.
 
     Returns the activated release_id, or None when the pointer already names
-    this release at the current worker schema. Raises StaticAssetError when
-    the live tree is missing, inconsistent, or changed while being built —
-    the previously activated release keeps serving in every failure case.
+    this release at the current worker schema (``force`` rebuilds anyway —
+    for entity re-exports that regenerate assets without a new release_id).
+    Raises StaticAssetError when the live tree is missing, inconsistent, or
+    changed while being built — the previously activated release keeps
+    serving in every failure case.
     """
     live = Path(live_root).resolve()
     initial = _read_manifest_bytes(live)
@@ -373,7 +376,8 @@ def run_once(
 
     pointer = _pointer(store)
     if (
-        pointer is not None
+        not force
+        and pointer is not None
         and pointer.get("release_id") == release_id
         and pointer.get("worker_schema") == WORKER_SCHEMA
     ):
@@ -425,9 +429,14 @@ def main() -> None:
         help="Completed live /data/v1 export tree (read-only input)",
     )
     parser.add_argument("--settle-seconds", type=float, default=5.0)
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Rebuild even when the pointer already names the live release_id",
+    )
     args = parser.parse_args()
     try:
-        run_once(args.live_root, R2Client(), settle_seconds=args.settle_seconds)
+        run_once(args.live_root, R2Client(), settle_seconds=args.settle_seconds, force=args.force)
     except StaticAssetError as exc:
         _log("worker_release_retry", reason=str(exc))
         raise SystemExit(1) from exc
