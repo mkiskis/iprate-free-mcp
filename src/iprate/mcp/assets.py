@@ -251,6 +251,8 @@ def build_catalog(
     target.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
     try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o644)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             json.dump(catalog, handle, ensure_ascii=False, separators=(",", ":"))
         os.replace(temporary, target)

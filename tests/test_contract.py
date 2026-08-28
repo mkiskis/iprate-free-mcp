@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -281,4 +282,6 @@ def test_catalog_module_entrypoint_invokes_builder(static_release: Path, capsys:
     with patch("sys.argv", ["iprate.mcp.catalog_cli", str(static_release), "--output", str(output)]):
         catalog_main()
     assert output.is_file()
+    if os.name != "nt":
+        assert output.stat().st_mode & 0o777 == 0o644
     assert "Built static MCP catalogue for test-release" in capsys.readouterr().out
