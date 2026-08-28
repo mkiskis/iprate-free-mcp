@@ -33,7 +33,8 @@ services:
       - runtime
 
   refresher:
-    build: .
+    # No `build:` here — the mcp service owns the image build; building the
+    # same tag from two services races buildkit against itself.
     image: iprate-free-mcp:0.2.0
     container_name: iprate-free-mcp-refresher
     restart: unless-stopped
