@@ -2,7 +2,10 @@
 name = "iprate-mcp"
 main = "src/index.ts"
 compatibility_date = "2026-08-01"
-workers_dev = true
+workers_dev = false
+routes = [
+  { pattern = "mcp.iprate.eu", custom_domain = true }
+]
 
 [observability]
 enabled = true
