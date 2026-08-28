@@ -19,3 +19,17 @@ jobs:
       - run: ruff check .
       - run: pytest -q
       - run: docker build -t iprate-free-mcp:test .
+
+  worker:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx vitest run
