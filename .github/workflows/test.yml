@@ -18,3 +18,4 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: ruff check .
       - run: pytest -q
+      - run: docker build -t iprate-free-mcp:test .
