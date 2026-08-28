@@ -11,7 +11,7 @@ WORKDIR /app
 
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
-RUN pip install --no-cache-dir . \
+RUN pip install --no-cache-dir ".[builder]" \
     && addgroup --system iprate \
     && adduser --system --ingroup iprate --no-create-home iprate
 

@@ -6,3 +6,6 @@ __pycache__/
 dist/
 build/
 *.sqlite3
+.r2.env
+node_modules/
+.wrangler/

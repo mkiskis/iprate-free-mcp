@@ -1,7 +1,11 @@
+# Two usage profiles, nothing starts by default:
+#   --profile selfhost : the Python reference server + snapshot refresher
+#   --profile builder  : one-shot Worker-release builder (cron: `compose --profile builder run --rm builder`)
 services:
   mcp:
+    profiles: ["selfhost"]
     build: .
-    image: iprate-free-mcp:0.2.0
+    image: iprate-free-mcp:0.3.0
     container_name: iprate-free-mcp
     restart: unless-stopped
     read_only: true
@@ -33,9 +37,10 @@ services:
       - runtime
 
   refresher:
+    profiles: ["selfhost"]
     # No `build:` here — the mcp service owns the image build; building the
     # same tag from two services races buildkit against itself.
-    image: iprate-free-mcp:0.2.0
+    image: iprate-free-mcp:0.3.0
     container_name: iprate-free-mcp-refresher
     restart: unless-stopped
     read_only: true
@@ -61,6 +66,29 @@ services:
     volumes:
       - ${IPRATE_STATIC_ROOT:-/home/ming/iprate-output/data/v1}:/live/data/v1:ro
       - ${IPRATE_MCP_RELEASES_ROOT:-/home/ming/iprate-free-mcp-releases}:/data:rw
+
+  builder:
+    profiles: ["builder"]
+    build: .
+    image: iprate-free-mcp:0.3.0
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    mem_limit: 2048m
+    cpus: 2.0
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    env_file:
+      - path: .r2.env
+        required: false
+    command:
+      - iprate-free-mcp-build-worker-release
+      - --live-root
+      - /live/data/v1
+    volumes:
+      - ${IPRATE_STATIC_ROOT:-/home/ming/iprate-output/data/v1}:/live/data/v1:ro
 
 networks:
   runtime:
