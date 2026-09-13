@@ -13,6 +13,21 @@ The adapter exposes bounded selections from one completed IPRATE static release:
 - `get_ip_market_snapshot`
 - `get_iprate_coverage`
 
+The same Worker also contains a separate paid Data API adapter at:
+
+```text
+https://mcp.iprate.eu/data-api/mcp
+```
+
+It exposes the eight Data API v1 tools: `get_coverage`, `resolve_entity`,
+`get_portfolio`, `get_trademark`, `search_trademarks`, `find_representative`,
+`get_firm_profile`, and `create_watch`. Custom MCP clients send an issued API
+credential as `X-IPRATE-API-Key`. This is an explicit API-key adapter contract;
+it does not accept or forward OAuth bearer tokens. The backend rechecks scopes,
+office and field entitlements, quotas, idempotency, and billing for every tool
+call. `create_watch` is marked as a persistent write requiring client
+confirmation. Returned register text is quoted untrusted data.
+
 It has no database, ORM, SQL, database credential, application-API fallback, or private
 IPRATE package dependency. Ratings and statistics are copied from released JSON assets;
 they are never recomputed by the MCP service. Anonymous calls are rate limited in memory

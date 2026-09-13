@@ -2,6 +2,7 @@
 // Serving model: Cloudflare Worker over one immutable R2 release — no
 // database, no application-API fallback, no origin server.
 
+import { handleDataMcpPost } from "./data-protocol";
 import { handleMcpPost } from "./protocol";
 import { type Env, StaticAssetError, loadRelease } from "./release";
 import { SERVER_VERSION } from "./service";
@@ -22,9 +23,15 @@ function corsHeaders(request: Request): Record<string, string> {
     "access-control-allow-origin": origin,
     vary: "origin",
     "access-control-allow-methods": "GET, POST, OPTIONS",
-    "access-control-allow-headers": "content-type, accept, mcp-protocol-version, mcp-session-id, last-event-id",
+    "access-control-allow-headers":
+      "content-type, accept, mcp-protocol-version, mcp-session-id, last-event-id, x-iprate-api-key, idempotency-key",
     "access-control-max-age": "86400",
   };
+}
+
+function originAllowed(request: Request): boolean {
+  const origin = request.headers.get("origin");
+  return !origin || ALLOWED_ORIGINS.has(origin) || LOCAL_ORIGIN.test(origin);
 }
 
 function jsonResponse(
@@ -42,6 +49,11 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const cors = corsHeaders(request);
     const url = new URL(request.url);
+    const paidDataApi = url.pathname === "/data-api/mcp";
+
+    if (!originAllowed(request)) {
+      return jsonResponse(403, { error: "origin_not_allowed" });
+    }
 
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: cors });
@@ -73,7 +85,7 @@ export default {
       }
     }
 
-    if (url.pathname !== "/mcp") {
+    if (url.pathname !== "/mcp" && !paidDataApi) {
       return jsonResponse(404, { error: "not_found" }, cors);
     }
     if (request.method !== "POST") {
@@ -81,14 +93,15 @@ export default {
     }
 
     if (env.RATE_LIMITER) {
-      const key = request.headers.get("cf-connecting-ip") ?? "unknown";
+      const address = request.headers.get("cf-connecting-ip") ?? "unknown";
+      const key = `${paidDataApi ? "data-api" : "public"}:${address}`;
       const { success } = await env.RATE_LIMITER.limit({ key });
       if (!success) {
         return jsonResponse(
           429,
           {
             status: "rate_limited",
-            message: "Anonymous rate limit exceeded; retry after the indicated delay.",
+            message: "Edge rate limit exceeded; retry after the indicated delay.",
             retry_after_seconds: 60,
           },
           { "retry-after": "60", ...cors },
@@ -116,10 +129,15 @@ export default {
       );
     }
 
-    const { status, payload } = await handleMcpPost(env, body);
+    const { status, payload } = paidDataApi
+      ? await handleDataMcpPost(env, body, request.headers.get("x-iprate-api-key"))
+      : await handleMcpPost(env, body);
+    const responseHeaders = paidDataApi
+      ? { "cache-control": "private, no-store", ...cors }
+      : cors;
     if (payload === null) {
-      return new Response(null, { status, headers: cors });
+      return new Response(null, { status, headers: responseHeaders });
     }
-    return jsonResponse(status, payload, cors);
+    return jsonResponse(status, payload, responseHeaders);
   },
 };
