@@ -221,6 +221,31 @@ export const PAID_TOOLS: PaidToolDefinition[] = [
   },
 ];
 
+// The REST pre-authentication limiter buckets by client address. Every relayed
+// call leaves this Worker from one egress address, so the end client's address
+// is forwarded with an HMAC the API verifies before trusting it.
+export const WORKER_CLIENT_IP_HEADER = "X-IPRATE-Client-IP";
+export const WORKER_TIMESTAMP_HEADER = "X-IPRATE-Worker-Timestamp";
+export const WORKER_SIGNATURE_HEADER = "X-IPRATE-Worker-Signature";
+
+export async function signClientAddress(secret: string, timestamp: string, clientIp: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(`${timestamp}.${clientIp}`));
+  return Array.from(new Uint8Array(signature), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function relayedClientAddress(clientIp: string | null): string {
+  if (!clientIp || clientIp.length > 64 || /\s/.test(clientIp)) return "unknown";
+  return clientIp;
+}
+
 function addQuery(url: URL, key: string, value: unknown): void {
   if (value === undefined || value === null || value === "") return;
   if (Array.isArray(value)) {
@@ -317,10 +342,11 @@ function restRequest(name: string, args: Record<string, unknown>): RestRequest {
 }
 
 export async function callPaidTool(
-  _env: Env,
+  env: Env,
   name: string,
   args: Record<string, unknown>,
   apiKey: string | null,
+  clientIp: string | null = null,
 ): Promise<{ status: number; body: unknown }> {
   const request = restRequest(name, args);
   if (!request.public && !apiKey) {
@@ -330,6 +356,13 @@ export async function callPaidTool(
   if (apiKey) headers.set("X-API-Key", apiKey);
   if (typeof args.idempotency_key === "string") headers.set("Idempotency-Key", args.idempotency_key);
   if (request.body !== undefined) headers.set("content-type", "application/json");
+  if (env.DATA_API_WORKER_SECRET) {
+    const address = relayedClientAddress(clientIp);
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    headers.set(WORKER_CLIENT_IP_HEADER, address);
+    headers.set(WORKER_TIMESTAMP_HEADER, timestamp);
+    headers.set(WORKER_SIGNATURE_HEADER, await signClientAddress(env.DATA_API_WORKER_SECRET, timestamp, address));
+  }
   const response = await fetch(request.path, {
     method: request.method ?? "GET",
     headers,

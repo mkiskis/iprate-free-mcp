@@ -130,7 +130,12 @@ export default {
     }
 
     const { status, payload } = paidDataApi
-      ? await handleDataMcpPost(env, body, request.headers.get("x-iprate-api-key"))
+      ? await handleDataMcpPost(
+          env,
+          body,
+          request.headers.get("x-iprate-api-key"),
+          request.headers.get("cf-connecting-ip"),
+        )
       : await handleMcpPost(env, body);
     const responseHeaders = paidDataApi
       ? { "cache-control": "private, no-store", ...cors }

@@ -1,6 +1,12 @@
 import { env } from "cloudflare:test";
 import { afterEach, expect, it, vi } from "vitest";
 
+import {
+  WORKER_CLIENT_IP_HEADER,
+  WORKER_SIGNATURE_HEADER,
+  WORKER_TIMESTAMP_HEADER,
+  signClientAddress,
+} from "../src/data-api";
 import worker from "../src/index";
 
 async function post(
@@ -111,6 +117,56 @@ it("forwards only to the fixed Data API and preserves idempotency", async () => 
     event_types: ["opposition"],
     delivery: "poll",
   });
+});
+
+it("signs the end-client address for the REST pre-authentication limiter", async () => {
+  const upstream = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(JSON.stringify({ data: null, meta: { result_state: "not_found" } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+  );
+  const response = await post(
+    {
+      jsonrpc: "2.0",
+      id: 6,
+      method: "tools/call",
+      params: { name: "get_firm_profile", arguments: { representative_id: "firm:42" } },
+    },
+    { "cf-connecting-ip": "203.0.113.9", "x-iprate-api-key": "ipk_test_secret" },
+    { ...env, DATA_API_WORKER_SECRET: "worker-secret" },
+  );
+  expect(response.status).toBe(200);
+  const headers = new Headers(upstream.mock.calls[0][1]?.headers);
+  expect(headers.get(WORKER_CLIENT_IP_HEADER)).toBe("203.0.113.9");
+  const timestamp = headers.get(WORKER_TIMESTAMP_HEADER) ?? "";
+  expect(timestamp).toMatch(/^\d+$/);
+  expect(Math.abs(Number(timestamp) - Math.floor(Date.now() / 1000))).toBeLessThan(5);
+  expect(headers.get(WORKER_SIGNATURE_HEADER)).toBe(
+    await signClientAddress("worker-secret", timestamp, "203.0.113.9"),
+  );
+});
+
+it("matches the REST signature vector and sends no relay headers without the secret", async () => {
+  expect(await signClientAddress("worker-secret", "1789300000", "203.0.113.9")).toBe(
+    "5b04a71da76e0b31fed545193cc80760ac4e6adae79021e7348fa4811a5d1527",
+  );
+  const upstream = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response("{}", { status: 200, headers: { "content-type": "application/json" } }),
+  );
+  await post(
+    {
+      jsonrpc: "2.0",
+      id: 7,
+      method: "tools/call",
+      params: { name: "get_firm_profile", arguments: { representative_id: "firm:42" } },
+    },
+    { "cf-connecting-ip": "203.0.113.9", "x-iprate-api-key": "ipk_test_secret" },
+  );
+  const headers = new Headers(upstream.mock.calls[0][1]?.headers);
+  expect(headers.get(WORKER_CLIENT_IP_HEADER)).toBeNull();
+  expect(headers.get(WORKER_TIMESTAMP_HEADER)).toBeNull();
+  expect(headers.get(WORKER_SIGNATURE_HEADER)).toBeNull();
 });
 
 it("rejects an untrusted browser Origin before MCP processing", async () => {

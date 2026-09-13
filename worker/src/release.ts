@@ -14,6 +14,7 @@ export interface Env {
   RATE_LIMITER?: { limit(options: { key: string }): Promise<{ success: boolean }> };
   ASSET_BASE_URL?: string;
   STALE_AFTER_DAYS?: string;
+  DATA_API_WORKER_SECRET?: string;
 }
 
 interface Pointer {

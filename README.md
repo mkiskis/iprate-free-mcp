@@ -28,6 +28,14 @@ office and field entitlements, quotas, idempotency, and billing for every tool
 call. `create_watch` is marked as a persistent write requiring client
 confirmation. Returned register text is quoted untrusted data.
 
+When the `DATA_API_WORKER_SECRET` secret binding is configured (`wrangler secret
+put DATA_API_WORKER_SECRET`, the same value as the API's `DATA_API_WORKER_SECRET`),
+every relayed request carries the end client's address in `X-IPRATE-Client-IP`
+with `X-IPRATE-Worker-Timestamp` and an HMAC-SHA256 `X-IPRATE-Worker-Signature`
+over `<timestamp>.<address>`, so the API's pre-authentication limiter buckets by
+end client instead of the Worker's egress address. Without the secret the headers
+are omitted and the API applies its shared relay bucket.
+
 It has no database, ORM, SQL, database credential, application-API fallback, or private
 IPRATE package dependency. Ratings and statistics are copied from released JSON assets;
 they are never recomputed by the MCP service. Anonymous calls are rate limited in memory

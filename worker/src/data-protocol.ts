@@ -23,6 +23,7 @@ export async function handleDataMcpPost(
   env: Env,
   body: unknown,
   apiKey: string | null,
+  clientIp: string | null = null,
 ): Promise<RpcResult> {
   if (Array.isArray(body) || body === null || typeof body !== "object") {
     return rpcError(null, -32600, "Invalid Request", 400);
@@ -73,7 +74,7 @@ export async function handleDataMcpPost(
     return rpcError(message.id, -32602, "Tool arguments must be an object");
   }
   try {
-    const upstream = await callPaidTool(env, name, (args ?? {}) as Record<string, unknown>, apiKey);
+    const upstream = await callPaidTool(env, name, (args ?? {}) as Record<string, unknown>, apiKey, clientIp);
     const isError = upstream.status >= 400;
     return ok(message.id, {
       content: [{ type: "text", text: JSON.stringify(upstream.body) }],
