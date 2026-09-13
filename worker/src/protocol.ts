@@ -12,7 +12,7 @@ import {
   getIprateCoverage,
 } from "./service";
 
-const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26"];
+const SUPPORTED_PROTOCOL_VERSIONS = ["2026-07-28", "2025-06-18", "2025-03-26"];
 const LATEST_PROTOCOL_VERSION = "2025-06-18";
 
 const READ_ONLY = {
