@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import re
 import unicodedata
-from datetime import UTC, datetime
 from typing import Any, Literal
 from urllib.parse import quote
 
@@ -20,7 +19,6 @@ Status = Literal[
     "ambiguous",
     "not_public",
     "not_covered",
-    "stale",
     "source_unavailable",
     "invalid_request",
     "rate_limited",
@@ -102,40 +100,6 @@ def _profile_url(entity_type: str, slug: str) -> str:
 
 _normalise_text = normalise_text
 
-STALE_AFTER_DAYS_DEFAULT = 21.0
-
-
-def _stale_after_days() -> float:
-    try:
-        value = float(os.environ.get("IPRATE_MCP_STALE_AFTER_DAYS", ""))
-    except ValueError:
-        return STALE_AFTER_DAYS_DEFAULT
-    return value if value > 0 else STALE_AFTER_DAYS_DEFAULT
-
-
-def _release_age_days(release: ReleaseSnapshot) -> float | None:
-    if not release.as_of:
-        return None
-    try:
-        as_of = datetime.fromisoformat(str(release.as_of).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if as_of.tzinfo is None:
-        as_of = as_of.replace(tzinfo=UTC)
-    return max(0.0, (datetime.now(UTC) - as_of).total_seconds() / 86400.0)
-
-
-def _ok_status(release: ReleaseSnapshot) -> tuple[Status, list[str]]:
-    """Return "ok", or "stale" with a limitation note when the release is old."""
-    age = _release_age_days(release)
-    threshold = _stale_after_days()
-    if age is not None and age > threshold:
-        return "stale", [
-            f"The selected static release is {age:.0f} days old (stale threshold {threshold:.0f} days); "
-            "a newer release may exist."
-        ]
-    return "ok", []
-
 
 def _safe_text(value: Any, *, limit: int = 512) -> str | None:
     if value is None:
@@ -178,12 +142,10 @@ def _coverage(
 ) -> dict[str, Any]:
     return {
         "hold_state": "partial" if release.manifest.get("status") in {"warning", "degraded"} else "held",
-        "release_status": release.manifest.get("status"),
         "jurisdiction": jurisdiction,
         "right_type": right_type,
         "tier": tier,
         "static_assets": assets,
-        "gaps_and_incidents": release.manifest.get("degraded_reasons") or [],
         "exclusions": [
             "Only fields already present in the selected static release are available.",
             "Absence from leading-class or leading-client fields does not prove absence from the full corpus.",
@@ -386,13 +348,13 @@ def find_ip_representatives_result(
                 coverage=coverage,
                 source_urls=[_asset_url("manifest.json")],
             )
-        status, limitations = _ok_status(release)
+        limitations: list[str] = []
         if classes:
             limitations.append("Nice-class matching covers only classes published as leading classes in profiles.")
         if client_key:
             limitations.append("Client matching covers only names published as leading clients in profiles.")
         return _response(
-            status,
+            "ok",
             release=release,
             data={"items": [_public_representative(*item) for item in matches[:limit]]},
             coverage=coverage,
@@ -455,9 +417,8 @@ def get_ip_representative_profile_result(
         entity_type = str(representative["representative_type"])
         ordered_cohorts = sorted(representative.get("cohorts") or [], key=_cohort_priority)
         public_cohorts = [_public_cohort(item) for item in ordered_cohorts[:5]]
-        status, stale_limitations = _ok_status(release)
         return _response(
-            status,
+            "ok",
             release=release,
             data={
                 "representative_type": entity_type,
@@ -471,7 +432,7 @@ def get_ip_representative_profile_result(
                 "text_provenance": "quoted_untrusted_register_data",
             },
             coverage=coverage,
-            limitations=["At most five released cohort summaries are returned.", *stale_limitations],
+            limitations=["At most five released cohort summaries are returned."],
             source_urls=[
                 _profile_url(entity_type, str(representative["slug"])),
                 _asset_url("manifest.json"),
@@ -558,9 +519,8 @@ def get_ip_market_snapshot_result(
                 }
             )
         assets = [stats_path, firms_path]
-        status, stale_limitations = _ok_status(release)
         return _response(
-            status,
+            "ok",
             release=release,
             data={
                 "jurisdiction": normalised_jurisdiction,
@@ -577,7 +537,6 @@ def get_ip_market_snapshot_result(
                 right_type=right_type,
                 tier=tier,
             ),
-            limitations=stale_limitations,
             source_urls=[_asset_url(path) for path in assets],
         )
     except StaticAssetError as exc:
@@ -649,9 +608,8 @@ def get_iprate_coverage_result(
             )
         analytics = release.read_json("analytics_stats.json", verify_declared=True)
         hold_state = "partial" if release.manifest.get("status") in {"warning", "degraded"} else "held"
-        status, stale_limitations = _ok_status(release)
         return _response(
-            status,
+            "ok",
             release=release,
             data={
                 "hold_state": hold_state,
@@ -663,9 +621,8 @@ def get_iprate_coverage_result(
                     "released cohort rankings and ratings",
                     "released aggregate market statistics",
                     "leading classes and clients already published on profiles",
-                    "release coverage and incidents",
+                    "release coverage and provenance",
                 ],
-                "known_coverage_incidents": release.manifest.get("degraded_reasons") or [],
             },
             coverage=_coverage(
                 release,
@@ -674,7 +631,6 @@ def get_iprate_coverage_result(
                 right_type=right_type,
                 tier=tier,
             ),
-            limitations=stale_limitations,
             source_urls=[_asset_url(path) for path in assets],
         )
     except StaticAssetError as exc:

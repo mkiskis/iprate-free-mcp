@@ -1,4 +1,5 @@
-// Public entry: anonymous rate control, CORS, liveness, and the MCP path.
+// Public entry: anonymous rate control, CORS, liveness, the OpenAI
+// domain-verification token, and the MCP path.
 // Serving model: Cloudflare Worker over one immutable R2 release — no
 // database, no application-API fallback, no origin server.
 
@@ -71,6 +72,18 @@ export default {
           cors,
         );
       }
+    }
+
+    if (url.pathname === "/.well-known/openai-apps-challenge") {
+      const token = env.OPENAI_APPS_CHALLENGE?.trim();
+      if (!token) return jsonResponse(404, { error: "not_found" }, cors);
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return new Response(null, { status: 405, headers: { allow: "GET, HEAD", ...cors } });
+      }
+      return new Response(request.method === "HEAD" ? null : token, {
+        status: 200,
+        headers: { "content-type": "text/plain; charset=utf-8", ...cors },
+      });
     }
 
     if (url.pathname !== "/mcp") {

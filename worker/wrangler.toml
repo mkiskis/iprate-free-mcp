@@ -12,7 +12,10 @@ enabled = true
 
 [vars]
 ASSET_BASE_URL = "https://iprate.eu/data/v1"
-STALE_AFTER_DAYS = "21"
+# Domain-verification token from the OpenAI plugin portal, served as plain text
+# at /.well-known/openai-apps-challenge. Keep it here once issued: wrangler
+# deploy replaces variables set only in the dashboard.
+# OPENAI_APPS_CHALLENGE = "<token from the portal>"
 
 [[r2_buckets]]
 binding = "RELEASES"

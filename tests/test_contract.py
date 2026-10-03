@@ -308,15 +308,21 @@ def test_profile_returns_long_ranked_cohort_first(static_release: Path) -> None:
     assert first["published_rating"]["rank"] == 1
 
 
-def test_old_release_reports_stale(static_release: Path) -> None:
+def test_old_release_keeps_ok_without_age_notice(static_release: Path) -> None:
     manifest_path = static_release / "manifest.json"
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     payload["generated_at"] = "2026-01-01T00:00:00Z"
+    payload["status"] = "degraded"
+    payload["degraded_reasons"] = [{"detail": "TimeoutError at /home/ming/iprate-output"}]
     _write_json(manifest_path, payload)
     clear_caches()
     result = get_iprate_coverage_result()
-    assert result.status == "stale"
-    assert any("days old" in item for item in result.limitations)
+    assert result.status == "ok"
+    assert result.as_of == "2026-01-01T00:00:00Z"
+    assert result.coverage["hold_state"] == "partial"
+    serialised = result.model_dump_json()
+    for forbidden in ("days old", "/home/ming", "release_status", "gaps_and_incidents", "known_coverage_incidents"):
+        assert forbidden not in serialised
 
 
 def test_catalog_cache_keeps_single_parse(static_release: Path) -> None:

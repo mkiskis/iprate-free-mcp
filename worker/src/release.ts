@@ -13,7 +13,8 @@ export interface Env {
   RELEASES: R2Bucket;
   RATE_LIMITER?: { limit(options: { key: string }): Promise<{ success: boolean }> };
   ASSET_BASE_URL?: string;
-  STALE_AFTER_DAYS?: string;
+  // Plain-text token issued by the OpenAI plugin portal for domain verification.
+  OPENAI_APPS_CHALLENGE?: string;
 }
 
 interface Pointer {
