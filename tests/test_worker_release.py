@@ -430,9 +430,9 @@ def test_folded_person_never_takes_another_firms_own_slug(live_tree: Path) -> No
     assert len(rows[3]) == 7
 
 
-def _declare_attorney_aliases(root: Path, aliases: dict[str, str]) -> None:
+def _declare_attorney_aliases(root: Path, aliases: dict[str, str], firms: dict[str, int] | None = None) -> None:
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-    body = {"aliases": aliases}
+    body = {"aliases": aliases, **({"firms": firms} if firms is not None else {})}
     manifest["global_files"]["attorney-aliases.json"] = _write_json(root / "attorney-aliases.json", body)
     _write_json(root / "manifest.json", manifest)
     clear_caches()
@@ -474,3 +474,12 @@ def test_merged_attorney_of_a_solo_practice_finds_the_firm(live_tree: Path) -> N
     _release_id, objects = build_worker_artifacts(live_tree)
     rows = json.loads(objects["search.json"])["entities"]
     assert [(row[0], row[7]) for row in rows] == [("firm", ["lt-example-person", "lt-example-person-old"])]
+
+
+def test_attorney_record_ruled_a_firm_finds_the_firm(live_tree: Path) -> None:
+    _declare_attorney_aliases(live_tree, {}, firms={"lt-example-as-attorney": 1, "lt-gone": 999})
+    _release_id, objects = build_worker_artifacts(live_tree)
+    rows = json.loads(objects["search.json"])["entities"]
+    firm = next(row for row in rows if row[0] == "firm")
+    # An unknown firm id adds nothing.
+    assert firm[7] == ["lt-example-as-attorney"]

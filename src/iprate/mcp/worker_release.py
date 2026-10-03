@@ -406,12 +406,17 @@ def build_worker_artifacts(
 
     allowed, solo_links = _search_allowlist(live, manifest)
     scan_rows, shard_records, counts = _entity_records(live, manifest, allowed, public_slugs or {}, solo_links)
-    # The export lists merged attorney URLs once it carries attorney-aliases.json.
+    # The export lists merged attorney URLs once it carries attorney-aliases.json;
+    # "firms" maps an attorney record the owner ruled a firm to that firm's id.
     retired_attorneys: dict[str, str] = {}
+    firm_records: dict[str, int] = {}
     if declared_checksum(manifest, "attorney-aliases.json") is not None:
         payload = json.loads(_validated_bytes(live, manifest, "attorney-aliases.json"))
         retired_attorneys = {str(k): str(v) for k, v in (payload.get("aliases") or {}).items()}
-    counts["retired_aliases"] = _add_retired_aliases(scan_rows, retired_firms or {}, retired_attorneys)
+        firm_records = {str(k): int(v) for k, v in (payload.get("firms") or {}).items()}
+    counts["retired_aliases"] = _add_retired_aliases(
+        scan_rows, {**firm_records, **(retired_firms or {})}, retired_attorneys
+    )
 
     objects: dict[str, bytes] = {}
     checksums: dict[str, str] = {}
