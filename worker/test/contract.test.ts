@@ -100,6 +100,7 @@ async function seedRelease(): Promise<void> {
           ["LT", "tm", "national", "long", 1, 91.2, ["9"], ["acme ltd"]],
           ["LT", "tm", "national", "recent", null, 70.0, ["9"], ["beta corp"]],
         ],
+        ["lt-example"],
       ],
       [
         "attorney",
@@ -331,6 +332,16 @@ it("profile returns the long ranked cohort first", async () => {
   const first = envelope.data.released_cohorts[0];
   expect(first.window).toBe("long");
   expect(first.published_rating.rank).toBe(1);
+});
+
+it("profile resolves the site public slug and the export slug", async () => {
+  for (const slug of ["lt-example", "LT-EXAMPLE", "lt-example-ip"]) {
+    const envelope = await callTool("get_ip_representative_profile", { slug });
+    expect(envelope.status).toBe("ok");
+    expect(envelope.data.representative_id).toBe(1);
+  }
+  const missing = await callTool("get_ip_representative_profile", { slug: "lt-example-i" });
+  expect(missing.status).toBe("not_public");
 });
 
 it("market snapshot copies static values", async () => {

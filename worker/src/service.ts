@@ -405,7 +405,9 @@ export async function getIpRepresentativeProfile(env: Env, args: ProfileArgument
       if (representativeType && row[0] !== representativeType) continue;
       if (
         (wantedId !== null && row[1] === wantedId) ||
-        (wantedSlug !== null && row[2].toLowerCase() === wantedSlug)
+        (wantedSlug !== null &&
+          (row[2].toLowerCase() === wantedSlug ||
+            (row[7] ?? []).some((alias) => alias.toLowerCase() === wantedSlug)))
       ) {
         candidates.push(row);
       }

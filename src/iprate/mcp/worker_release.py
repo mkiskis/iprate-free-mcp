@@ -141,6 +141,30 @@ def _search_allowlist(live_root: Path, manifest: dict[str, Any]) -> set[tuple[st
     return allowed
 
 
+def _public_firm_slugs(registry_path: Path | None) -> tuple[dict[int, str], str | None]:
+    """Firm id -> public profile slug, as the site allocates it, and the registry digest.
+
+    The export tree names firms by their database slug; the site build gives
+    each firm a public slug from its append-only URL registry and redirects
+    the database slug to it. The family slug wins, as on the site. Without a
+    readable registry the database slug stays the public one.
+    """
+    if registry_path is None:
+        return {}, None
+    try:
+        raw = registry_path.read_bytes()
+        registry = json.loads(raw)
+        families = registry.get("families") or {}
+        slugs = {
+            int(firm_id): str((families.get(firm_id) or {}).get("slug") or entry["slug"])
+            for firm_id, entry in registry["firms"].items()
+        }
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        _log("public_url_registry_unavailable", path=str(registry_path), reason=str(exc))
+        return {}, None
+    return slugs, hashlib.sha256(raw).hexdigest()[:16]
+
+
 def _shard_id(entity_type: str, slug: str) -> str:
     return hashlib.sha256(f"{entity_type}:{slug}".encode()).hexdigest()[:2]
 
@@ -166,6 +190,7 @@ def _entity_records(
     live_root: Path,
     manifest: dict[str, Any],
     allowed: set[tuple[str, int]],
+    public_slugs: dict[int, str],
 ) -> tuple[list[list[Any]], dict[str, dict[str, Any]], dict[str, int]]:
     scan_rows: list[list[Any]] = []
     shard_records: dict[str, dict[str, Any]] = {}
@@ -201,27 +226,31 @@ def _entity_records(
             cohorts.sort(key=_cohort_priority)
             shard = _shard_id(entity_type, slug)
             name_key = normalise_text(str(profile.get("name") or ""))
-            scan_rows.append(
-                [
-                    entity_type,
-                    int(entity_id),
-                    slug,
-                    name_key,
-                    profile.get("country_code"),
-                    shard,
-                    [_scan_cohort(cohort) for cohort in cohorts],
-                ]
-            )
+            public_slug = public_slugs.get(int(entity_id), slug) if entity_type == "firm" else slug
+            scan_row = [
+                entity_type,
+                int(entity_id),
+                slug,
+                name_key,
+                profile.get("country_code"),
+                shard,
+                [_scan_cohort(cohort) for cohort in cohorts],
+            ]
+            # The database slug stays the key that cohort files and shards
+            # use; the public slug is matched as an alias of it.
+            if public_slug != slug:
+                scan_row.append([public_slug])
+            scan_rows.append(scan_row)
             record_key = f"{entity_type}:{slug.casefold()}"
             shard_records.setdefault(shard, {})[record_key] = {
                 "representative_type": entity_type,
                 "representative_id": int(entity_id),
                 "quoted_name": _safe_text(profile.get("name")),
-                "slug": slug,
+                "slug": public_slug,
                 "home_country_code": profile.get("country_code"),
                 "city": _safe_text(profile.get("city"), limit=256),
                 "cohorts": [_public_cohort(cohort) for cohort in cohorts],
-                "profile_url": _profile_url(entity_type, slug),
+                "profile_url": _profile_url(entity_type, public_slug),
                 "text_provenance": "quoted_untrusted_register_data",
             }
             counts[plural] += 1
@@ -244,7 +273,9 @@ def _cohort_windows(files: Any) -> dict[str, dict[str, str]]:
     return {window: paths for window, paths in windows.items() if "stats" in paths}
 
 
-def build_worker_artifacts(live_root: str | Path) -> tuple[str, dict[str, bytes]]:
+def build_worker_artifacts(
+    live_root: str | Path, public_slugs: dict[int, str] | None = None
+) -> tuple[str, dict[str, bytes]]:
     """Return (release_id, {relative object key: body}) for one consistent release.
 
     Keys are relative to the ``releases/{release_id}/{build_id}/`` prefix;
@@ -257,7 +288,7 @@ def build_worker_artifacts(live_root: str | Path) -> tuple[str, dict[str, bytes]
     release_id = str(manifest["release_id"])
 
     allowed = _search_allowlist(live, manifest)
-    scan_rows, shard_records, counts = _entity_records(live, manifest, allowed)
+    scan_rows, shard_records, counts = _entity_records(live, manifest, allowed, public_slugs or {})
 
     objects: dict[str, bytes] = {}
     checksums: dict[str, str] = {}
@@ -357,6 +388,7 @@ def run_once(
     *,
     settle_seconds: float = 5.0,
     force: bool = False,
+    public_url_registry: str | Path | None = None,
 ) -> str | None:
     """Build, upload, and activate one release. Silent no-op when current.
 
@@ -374,12 +406,16 @@ def run_once(
     except (KeyError, TypeError, ValueError) as exc:
         raise StaticAssetError("Live manifest has no release_id") from exc
 
+    public_slugs, registry_digest = _public_firm_slugs(Path(public_url_registry) if public_url_registry else None)
     pointer = _pointer(store)
+    # The site build allocates public slugs after the export, so a registry
+    # change rebuilds the same release.
     if (
         not force
         and pointer is not None
         and pointer.get("release_id") == release_id
         and pointer.get("worker_schema") == WORKER_SCHEMA
+        and pointer.get("public_url_registry") == registry_digest
     ):
         return None
 
@@ -388,7 +424,7 @@ def run_once(
         if _read_manifest_bytes(live) != initial:
             raise StaticAssetError("Live release changed while settling; retrying later")
 
-    built_release, objects = build_worker_artifacts(live)
+    built_release, objects = build_worker_artifacts(live, public_slugs)
     if built_release != release_id or _read_manifest_bytes(live) != initial:
         raise StaticAssetError("Live release changed during build; retrying later")
 
@@ -406,6 +442,7 @@ def run_once(
                 "worker_schema": WORKER_SCHEMA,
                 "build_id": build_id,
                 "prefix": prefix,
+                "public_url_registry": registry_digest,
             }
         ),
     )
@@ -428,6 +465,12 @@ def main() -> None:
         default=Path(os.environ.get("IPRATE_MCP_LIVE_ROOT", "/live/data/v1")),
         help="Completed live /data/v1 export tree (read-only input)",
     )
+    parser.add_argument(
+        "--public-url-registry",
+        type=Path,
+        default=os.environ.get("IPRATE_MCP_PUBLIC_URL_REGISTRY") or None,
+        help="Site public URL registry (read-only); firm profile URLs use its slugs",
+    )
     parser.add_argument("--settle-seconds", type=float, default=5.0)
     parser.add_argument(
         "--force",
@@ -436,7 +479,13 @@ def main() -> None:
     )
     args = parser.parse_args()
     try:
-        run_once(args.live_root, R2Client(), settle_seconds=args.settle_seconds, force=args.force)
+        run_once(
+            args.live_root,
+            R2Client(),
+            settle_seconds=args.settle_seconds,
+            force=args.force,
+            public_url_registry=args.public_url_registry,
+        )
     except StaticAssetError as exc:
         _log("worker_release_retry", reason=str(exc))
         raise SystemExit(1) from exc

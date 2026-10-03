@@ -44,7 +44,8 @@ export interface McpManifest {
   checksums: Record<string, string>;
 }
 
-// Scan row: [type, id, slug, name_key, home_cc, shard, cohorts]
+// Scan row: [type, id, slug, name_key, home_cc, shard, cohorts, public_slugs?]
+// slug is the export key; public_slugs are the site URL slugs that redirect from it.
 // Cohort tuple: [jurisdiction, right(asset code), tier, window, rank, score, classes, client_keys]
 export type ScanCohort = [
   string,
@@ -56,7 +57,7 @@ export type ScanCohort = [
   string[],
   string[],
 ];
-export type ScanRow = [string, number, string, string, string | null, string, ScanCohort[]];
+export type ScanRow = [string, number, string, string, string | null, string, ScanCohort[], string[]?];
 
 interface SearchIndex {
   schema: number;

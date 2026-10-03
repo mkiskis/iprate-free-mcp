@@ -273,3 +273,67 @@ def test_checksum_mismatch_aborts_without_uploading(live_tree: Path) -> None:
         run_once(live_tree, store, settle_seconds=0)
     assert set(store.objects) == keys_before
     assert json.loads(store.objects[POINTER_KEY])["release_id"] == "release-a"
+
+
+def _firm_view(store: FakeStore) -> tuple[list, dict]:
+    prefix = json.loads(store.objects[POINTER_KEY])["prefix"]
+    rows = json.loads(store.objects[prefix + "search.json"])["entities"]
+    row = next(row for row in rows if row[0] == "firm")
+    record = json.loads(store.objects[f"{prefix}entities/{row[5]}.json"])["entities"][f"firm:{row[2]}"]
+    return row, record
+
+
+def test_firm_takes_the_site_public_slug_and_keeps_the_export_key(live_tree: Path, tmp_path: Path) -> None:
+    registry = tmp_path / "public-url-registry.json"
+    _write_json(registry, {"firms": {"1": {"slug": "lt-example", "aliases": ["lt-example-ip", "1"]}}})
+    store = FakeStore()
+    assert run_once(live_tree, store, settle_seconds=0, public_url_registry=registry) == "release-a"
+
+    row, record = _firm_view(store)
+    assert row[2] == "lt-example-ip"  # export key: shards and cohort files still join on it
+    assert row[7] == ["lt-example"]
+    assert record["slug"] == "lt-example"
+    assert record["profile_url"] == "https://iprate.eu/firms/lt-example/"
+    prefix = json.loads(store.objects[POINTER_KEY])["prefix"]
+    attorney = next(r for r in json.loads(store.objects[prefix + "search.json"])["entities"] if r[0] == "attorney")
+    assert len(attorney) == 7
+
+
+def test_family_slug_wins_as_on_the_site(live_tree: Path, tmp_path: Path) -> None:
+    registry = tmp_path / "public-url-registry.json"
+    _write_json(
+        registry,
+        {
+            "firms": {"1": {"slug": "lt-example", "aliases": []}},
+            "families": {"1": {"slug": "lt-example-group", "members": [1]}},
+        },
+    )
+    store = FakeStore()
+    run_once(live_tree, store, settle_seconds=0, public_url_registry=registry)
+    row, record = _firm_view(store)
+    assert row[7] == ["lt-example-group"]
+    assert record["profile_url"] == "https://iprate.eu/firms/lt-example-group/"
+
+
+def test_registry_change_rebuilds_the_same_release(live_tree: Path, tmp_path: Path) -> None:
+    registry = tmp_path / "public-url-registry.json"
+    _write_json(registry, {"firms": {"1": {"slug": "lt-example-ip", "aliases": []}}})
+    store = FakeStore()
+    assert run_once(live_tree, store, settle_seconds=0, public_url_registry=registry) == "release-a"
+    row, record = _firm_view(store)
+    assert len(row) == 7 and record["slug"] == "lt-example-ip"
+    assert run_once(live_tree, store, settle_seconds=0, public_url_registry=registry) is None
+
+    # The site build allocated a shorter slug after the export: rebuild.
+    _write_json(registry, {"firms": {"1": {"slug": "lt-example", "aliases": ["lt-example-ip"]}}})
+    assert run_once(live_tree, store, settle_seconds=0, public_url_registry=registry) == "release-a"
+    assert _firm_view(store)[1]["slug"] == "lt-example"
+
+
+def test_unreadable_registry_keeps_the_export_slug(live_tree: Path, tmp_path: Path) -> None:
+    store = FakeStore()
+    missing = tmp_path / "absent.json"
+    assert run_once(live_tree, store, settle_seconds=0, public_url_registry=missing) == "release-a"
+    row, record = _firm_view(store)
+    assert len(row) == 7
+    assert record["profile_url"] == "https://iprate.eu/firms/lt-example-ip/"
