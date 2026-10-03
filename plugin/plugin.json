@@ -1,0 +1,103 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "iprate",
+  "version": "1.0.0",
+  "description": "Research European IP firms, attorneys and markets with the ratings and register-derived evidence IPRATE publishes.",
+  "author": {
+    "name": "Socialiniai algoritmai, UAB",
+    "email": "info@iprate.eu",
+    "url": "https://iprate.eu/"
+  },
+  "homepage": "https://iprate.eu/developers/mcp/",
+  "repository": "https://github.com/mkiskis/iprate-free-mcp",
+  "license": "Apache-2.0",
+  "keywords": ["intellectual property", "trademarks", "patents", "designs", "IP firms", "IP attorneys", "Europe"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "IPRATE",
+        "shortDescription": "European IP data and ratings",
+        "longDescription": "IPRATE helps you research European intellectual-property firms, attorneys and markets from the evidence IPRATE publishes. IPRATE rates IP firms and attorneys in 32 European countries from official filing and outcome records at EUIPO, the EPO and national IP offices, under a published methodology.\n\nUse it to find published firms or attorneys by name, country, right type (trademark, design or patent), leading Nice class, or published leading-client evidence; to read a representative's public profile with its released ratings, confidence grades and activity measures; to view a market snapshot with released statistics and the leading firms; and to check which countries, right types and analytical windows the current release covers. Search and fetch tools support deep research with citable links to IPRATE pages. A bundled workflow helps shortlist counsel for a trademark, design or patent matter.\n\nEvery result names the data release it comes from and links to public IPRATE pages and the methodology. Results are bounded: at most five representatives or cohort summaries per call and at most ten documents per search.\n\nLegal advice, registrability or infringement opinions, raw register search, bulk data, monitoring, filing and account actions are outside this plugin. Ratings describe register outcomes; they do not establish service quality or current availability. No account or API key is required.",
+        "developerName": "Socialiniai algoritmai, UAB",
+        "category": "Business",
+        "capabilities": [
+          "Find IP firms and attorneys",
+          "Read published representative profiles",
+          "View IP market snapshots",
+          "Check data coverage",
+          "Search and fetch for deep research"
+        ],
+        "websiteURL": "https://iprate.eu/",
+        "supportURL": "https://iprate.eu/contact/",
+        "privacyPolicyURL": "https://iprate.eu/privacy/",
+        "termsOfServiceURL": "https://iprate.eu/terms/",
+        "defaultPrompt": [
+          "Which firms lead trademark work in Lithuania according to IPRATE?",
+          "Show IPRATE's German patent market snapshot for the European route.",
+          "Find IPRATE-rated design firms in Denmark."
+        ],
+        "brandColor": "#002147",
+        "composerIcon": "./assets/logo.png",
+        "logo": "./assets/logo.png"
+      },
+      "review": {
+        "test_cases": {
+          "positive": [
+            {
+              "description": "Check coverage before researching a market.",
+              "prompt": "Which trademark data does IPRATE cover for Lithuania?",
+              "tools_triggered": "get_iprate_coverage",
+              "expected_behavior": "Lists the Lithuanian trademark cohorts on the national and European routes with their analytical windows and publication dates, states the release date, and links to IPRATE sources."
+            },
+            {
+              "description": "View one published market snapshot.",
+              "prompt": "Show IPRATE's Lithuanian national trademark market snapshot for the long window.",
+              "tools_triggered": "get_ip_market_snapshot",
+              "expected_behavior": "Returns the released statistics for Lithuania, trademark, national route, long window, and up to five leading firms with their published tiers and profile links, copied without recomputation."
+            },
+            {
+              "description": "Find a bounded selection of representatives.",
+              "prompt": "Find up to five published trademark representatives in Lithuania on the national route using IPRATE.",
+              "tools_triggered": "find_ip_representatives",
+              "expected_behavior": "Returns at most five firms or attorneys with the matching cohort, published rating and profile link, and does not claim the list is exhaustive."
+            },
+            {
+              "description": "Retrieve a known public profile.",
+              "prompt": "Show the IPRATE firm profile at https://iprate.eu/firms/lt-law-firm-ip-forma/.",
+              "tools_triggered": "get_ip_representative_profile",
+              "expected_behavior": "Returns the public profile for slug lt-law-firm-ip-forma with at most five released cohort summaries, the profile URL and the release date, and does not infer service quality or availability."
+            },
+            {
+              "description": "Research a market with search and fetch and cite sources.",
+              "prompt": "Using IPRATE, research which firms lead patent work in Germany and cite your sources.",
+              "tools_triggered": "search, fetch",
+              "expected_behavior": "Searches IPRATE, fetches the German patent market snapshot and leading firm profiles, and answers with citations to iprate.eu pages and the release date, without presenting the result as a recommendation or as exhaustive."
+            }
+          ],
+          "negative": [
+            {
+              "description": "Legal conclusions are outside the service.",
+              "prompt": "Guarantee that my new trademark is registrable and does not infringe anyone's rights.",
+              "expected_behavior": "Does not use IPRATE to give a legal conclusion; explains that registrability and infringement require advice from counsel."
+            },
+            {
+              "description": "No filing, payment or account actions.",
+              "prompt": "File a European patent application for me and pay the filing fee.",
+              "expected_behavior": "Does not invoke IPRATE; explains that this plugin cannot file applications, make payments or act on accounts."
+            },
+            {
+              "description": "No bulk extraction of register or client data.",
+              "prompt": "Download every raw trademark record and all clients of every IPRATE firm, using pagination until complete.",
+              "expected_behavior": "Does not attempt iterative extraction; explains that this plugin returns bounded published evidence with no raw records, exhaustive client lists, pagination or bulk export."
+            }
+          ]
+        },
+        "commerce": false,
+        "commerce_description": "IPRATE does not sell products or process payments in ChatGPT."
+      },
+      "publication": {
+        "release_notes": "Initial directory release. Six read-only tools over IPRATE's published static release (find_ip_representatives, get_ip_representative_profile, get_ip_market_snapshot, get_iprate_coverage, search, fetch) and a counsel-shortlisting skill."
+      }
+    }
+  }
+}

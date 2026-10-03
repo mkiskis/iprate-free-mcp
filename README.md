@@ -1,17 +1,23 @@
 # IPRATE Free Public MCP
 
-Open-source adapter for IPRATE's four-tool, anonymous, read-only MCP endpoint:
+Open-source adapter for IPRATE's anonymous, read-only MCP endpoint:
 
 ```text
 https://mcp.iprate.eu/mcp
 ```
 
-The adapter exposes bounded selections from one completed IPRATE static release:
+The production endpoint is the Cloudflare Worker in `worker/`. It exposes bounded
+selections from one completed IPRATE static release through six tools:
 
 - `find_ip_representatives`
 - `get_ip_representative_profile`
 - `get_ip_market_snapshot`
 - `get_iprate_coverage`
+- `search` and `fetch`, the retrieval pair ChatGPT deep research and company knowledge
+  call (at most ten document references per search, one document per fetch)
+
+Every tool declares an output schema. The Python package in `src/` is the self-host
+reference implementation of the first four tools.
 
 It has no database, ORM, SQL, database credential, application-API fallback, or private
 IPRATE package dependency. Ratings and statistics are copied from released JSON assets;
@@ -82,11 +88,51 @@ docker compose up -d --build
 
 Environment overrides: `IPRATE_STATIC_ROOT` (live export tree),
 `IPRATE_MCP_RELEASES_ROOT` (snapshot directory), `IPRATE_MCP_REFRESH_UID`/`GID`
-(owner of the snapshot directory), `IPRATE_MCP_RATE_LIMIT_PER_MINUTE` (default 120),
-`IPRATE_MCP_STALE_AFTER_DAYS` (default 21). Neither service receives a database or
-application secret.
+(owner of the snapshot directory), `IPRATE_MCP_RATE_LIMIT_PER_MINUTE` (default 120).
+Neither service receives a database or application secret.
 
 Documentation: <https://iprate.eu/developers/mcp/>
+
+## Cloudflare Worker (production)
+
+The Worker serves `POST /mcp`, `GET /healthz`, and the OpenAI domain-verification token
+at `GET /.well-known/openai-apps-challenge`. It reads one immutable release from the
+private R2 bucket that the release builder (`iprate-free-mcp-build-worker-release`)
+fills.
+
+```bash
+cd worker
+npm ci
+npx tsc --noEmit
+npx vitest run
+```
+
+Response contract since 0.4.0: responses state the release through `release_id` and
+`as_of`. They no longer carry release incident records, the release status word, or a
+release-age notice. `hold_state` still reports `held` or `partial`.
+
+The domain-verification token is a Worker variable. When the OpenAI plugin portal
+issues it, add `OPENAI_APPS_CHALLENGE = "<token>"` under `[vars]` in
+`worker/wrangler.toml` before deploying; `wrangler deploy` replaces variables set only
+in the dashboard. Without the variable the path answers 404.
+
+## ChatGPT plugin package
+
+`plugin/` is the package uploaded to the OpenAI plugin portal (Agent Plugins format):
+`plugin.json` with listing, review cases and release notes under
+`extensions.com.openai`, `mcp.json` pointing at the production endpoint, the
+`select-european-ip-counsel` skill, and the logo. `tests/test_plugin_package.py` checks
+the portal's field limits and that the review cases name the Worker's actual tools.
+
+Build the upload from the folder contents, not the folder itself:
+
+```bash
+python -c "import pathlib, zipfile; root = pathlib.Path('plugin'); z = zipfile.ZipFile('dist/iprate-plugin.zip', 'w', zipfile.ZIP_DEFLATED); [z.write(p, p.relative_to(root).as_posix()) for p in sorted(root.rglob('*')) if p.is_file()]; z.close()"
+```
+
+The video walkthrough URL (`review.demo_recording_url`) and any country allowlist
+(`publication.countries`) are added before submission. Reviewer credentials are not
+needed: the server is anonymous.
 
 ## Licence
 
