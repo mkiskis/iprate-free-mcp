@@ -172,6 +172,70 @@ def _public_firm_slugs(registry_path: Path | None) -> tuple[dict[int, str], str 
     return slugs, hashlib.sha256(raw).hexdigest()[:16]
 
 
+def _retired_firm_aliases(registry_path: Path | None) -> dict[str, int]:
+    """Slug of a merged firm -> the surviving firm id, as the site redirects it.
+
+    The registry keeps every retired record with its ``merged_into`` target and
+    the aliases a reviewed merge retired; merge chains end at the survivor.
+    """
+    if registry_path is None:
+        return {}
+    try:
+        registry = json.loads(registry_path.read_bytes())
+        firms = registry["firms"]
+
+        def survivor(firm_id: int) -> int:
+            seen = set()
+            while (firms.get(str(firm_id)) or {}).get("merged_into") and firm_id not in seen:
+                seen.add(firm_id)
+                firm_id = int(firms[str(firm_id)]["merged_into"])
+            return firm_id
+
+        aliases = {
+            str(alias): survivor(int(target)) for alias, target in (registry.get("retired_aliases") or {}).items()
+        }
+        for firm_id, entry in firms.items():
+            if entry.get("merged_into"):
+                for alias in [entry.get("slug"), *(entry.get("aliases") or [])]:
+                    if alias:
+                        aliases.setdefault(str(alias), survivor(int(firm_id)))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        _log("public_url_registry_unavailable", path=str(registry_path), reason=str(exc))
+        return {}
+    return aliases
+
+
+def _add_retired_aliases(
+    scan_rows: list[list[Any]], retired_firms: dict[str, int], retired_attorneys: dict[str, str]
+) -> int:
+    """Old slugs of merged records find their survivor, as the site's redirects do.
+
+    A retired attorney whose survivor is a solo practice finds the firm row the
+    person was folded into. A slug that any record answers to stays with it.
+    """
+    owned: set[str] = set()
+    folded: dict[str, list[Any]] = {}
+    for row in scan_rows:
+        owned.add(row[2].casefold())
+        for alias in row[7] if len(row) > 7 else []:
+            owned.add(alias.casefold())
+            if row[0] == "firm":
+                folded.setdefault(alias.casefold(), row)
+    firms = {row[1]: row for row in scan_rows if row[0] == "firm"}
+    attorneys = {row[2].casefold(): row for row in scan_rows if row[0] == "attorney"}
+    targets = [(alias, firms.get(firm_id)) for alias, firm_id in retired_firms.items() if not alias.isdigit()]
+    targets += [
+        (old, attorneys.get(live.casefold()) or folded.get(live.casefold())) for old, live in retired_attorneys.items()
+    ]
+    added = 0
+    for alias, row in targets:
+        if row is not None and alias.casefold() not in owned:
+            _add_alias(row, alias)
+            owned.add(alias.casefold())
+            added += 1
+    return added
+
+
 def _site_search_lists_firm(profile: dict[str, Any]) -> bool:
     """The site search lists every firm profile with a rated cohort.
 
@@ -325,7 +389,9 @@ def _cohort_windows(files: Any) -> dict[str, dict[str, str]]:
 
 
 def build_worker_artifacts(
-    live_root: str | Path, public_slugs: dict[int, str] | None = None
+    live_root: str | Path,
+    public_slugs: dict[int, str] | None = None,
+    retired_firms: dict[str, int] | None = None,
 ) -> tuple[str, dict[str, bytes]]:
     """Return (release_id, {relative object key: body}) for one consistent release.
 
@@ -340,6 +406,12 @@ def build_worker_artifacts(
 
     allowed, solo_links = _search_allowlist(live, manifest)
     scan_rows, shard_records, counts = _entity_records(live, manifest, allowed, public_slugs or {}, solo_links)
+    # The export lists merged attorney URLs once it carries attorney-aliases.json.
+    retired_attorneys: dict[str, str] = {}
+    if declared_checksum(manifest, "attorney-aliases.json") is not None:
+        payload = json.loads(_validated_bytes(live, manifest, "attorney-aliases.json"))
+        retired_attorneys = {str(k): str(v) for k, v in (payload.get("aliases") or {}).items()}
+    counts["retired_aliases"] = _add_retired_aliases(scan_rows, retired_firms or {}, retired_attorneys)
 
     objects: dict[str, bytes] = {}
     checksums: dict[str, str] = {}
@@ -475,7 +547,8 @@ def run_once(
         if _read_manifest_bytes(live) != initial:
             raise StaticAssetError("Live release changed while settling; retrying later")
 
-    built_release, objects = build_worker_artifacts(live, public_slugs)
+    retired_firms = _retired_firm_aliases(Path(public_url_registry) if public_url_registry else None)
+    built_release, objects = build_worker_artifacts(live, public_slugs, retired_firms)
     if built_release != release_id or _read_manifest_bytes(live) != initial:
         raise StaticAssetError("Live release changed during build; retrying later")
 

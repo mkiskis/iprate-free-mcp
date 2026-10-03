@@ -199,7 +199,13 @@ def test_artifacts_cover_search_shards_and_assets(live_tree: Path) -> None:
 
     manifest = json.loads(objects["mcp-manifest.json"])
     assert manifest["release_id"] == "release-a"
-    assert manifest["mcp_entity_counts"] == {"firms": 1, "attorneys": 1, "excluded": 1, "folded": 0}
+    assert manifest["mcp_entity_counts"] == {
+        "firms": 1,
+        "attorneys": 1,
+        "excluded": 1,
+        "folded": 0,
+        "retired_aliases": 0,
+    }
     cohort = manifest["cohorts"]["LT:tm:national"]
     assert cohort["run_id"] == 32
     assert cohort["windows"] == ["long"]
@@ -242,6 +248,7 @@ def test_attorneys_still_follow_the_exported_search_rows(live_tree: Path) -> Non
         "attorneys": 0,
         "excluded": 2,
         "folded": 0,
+        "retired_aliases": 0,
     }
 
 
@@ -388,7 +395,7 @@ def test_solo_practice_is_one_firm_and_the_person_finds_it(live_tree: Path, in_p
     assert [(row[0], row[2]) for row in rows] == [("firm", "lt-example-ip")]
     assert rows[0][7] == ["lt-example-person"]
     counts = json.loads(objects["mcp-manifest.json"])["mcp_entity_counts"]
-    assert counts == {"firms": 1, "attorneys": 0, "excluded": 1, "folded": 1}
+    assert counts == {"firms": 1, "attorneys": 0, "excluded": 1, "folded": 1, "retired_aliases": 0}
     for key, body in objects.items():
         assert b"attorney:lt-example-person" not in body, key
 
@@ -421,3 +428,49 @@ def test_folded_person_never_takes_another_firms_own_slug(live_tree: Path) -> No
     rows = {row[1]: row for row in json.loads(objects["search.json"])["entities"] if row[0] == "firm"}
     assert rows[1][7] == ["lt-example"]  # the person's slug stays with firm 3, which owns it
     assert len(rows[3]) == 7
+
+
+def _declare_attorney_aliases(root: Path, aliases: dict[str, str]) -> None:
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    body = {"aliases": aliases}
+    manifest["global_files"]["attorney-aliases.json"] = _write_json(root / "attorney-aliases.json", body)
+    _write_json(root / "manifest.json", manifest)
+    clear_caches()
+
+
+def test_merged_firm_slugs_find_the_survivor(live_tree: Path, tmp_path: Path) -> None:
+    registry = tmp_path / "public-url-registry.json"
+    _write_json(
+        registry,
+        {
+            "firms": {
+                "1": {"slug": "lt-example", "aliases": []},
+                "9": {"slug": "lt-example-old", "aliases": ["lt-example-older", "9"], "merged_into": 8},
+                "8": {"slug": "lt-example-mid", "aliases": [], "merged_into": 1},
+            },
+            "retired_aliases": {"lt-example-retired": 8, "lt-example-person": 1, "77": 1},
+        },
+    )
+    store = FakeStore()
+    run_once(live_tree, store, settle_seconds=0, public_url_registry=registry)
+    row, _record = _firm_view(store)
+    # Chains end at the survivor; numeric ids and slugs another record owns are skipped.
+    assert set(row[7]) == {"lt-example", "lt-example-old", "lt-example-older", "lt-example-mid", "lt-example-retired"}
+    prefix = json.loads(store.objects[POINTER_KEY])["prefix"]
+    assert json.loads(store.objects[prefix + "mcp-manifest.json"])["mcp_entity_counts"]["retired_aliases"] == 4
+
+
+def test_merged_attorney_slugs_find_the_survivor(live_tree: Path) -> None:
+    _declare_attorney_aliases(live_tree, {"lt-example-person-old": "lt-example-person", "lt-unknown-old": "lt-nobody"})
+    _release_id, objects = build_worker_artifacts(live_tree)
+    rows = json.loads(objects["search.json"])["entities"]
+    attorney = next(row for row in rows if row[0] == "attorney")
+    assert attorney[7] == ["lt-example-person-old"]
+
+
+def test_merged_attorney_of_a_solo_practice_finds_the_firm(live_tree: Path) -> None:
+    _make_solo(live_tree, in_profile=True)
+    _declare_attorney_aliases(live_tree, {"lt-example-person-old": "lt-example-person"})
+    _release_id, objects = build_worker_artifacts(live_tree)
+    rows = json.loads(objects["search.json"])["entities"]
+    assert [(row[0], row[7]) for row in rows] == [("firm", ["lt-example-person", "lt-example-person-old"])]
