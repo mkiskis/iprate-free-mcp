@@ -400,17 +400,23 @@ export async function getIpRepresentativeProfile(env: Env, args: ProfileArgument
   let release: Release | null = null;
   try {
     release = await loadRelease(env);
-    const candidates: ScanRow[] = [];
+    const aliasOf = (row: ScanRow) =>
+      wantedSlug !== null && (row[7] ?? []).some((alias) => alias.toLowerCase() === wantedSlug);
+    let candidates: ScanRow[] = [];
     for (const row of release.search.entities) {
       if (representativeType && row[0] !== representativeType) continue;
       if (
         (wantedId !== null && row[1] === wantedId) ||
-        (wantedSlug !== null &&
-          (row[2].toLowerCase() === wantedSlug ||
-            (row[7] ?? []).some((alias) => alias.toLowerCase() === wantedSlug)))
+        (wantedSlug !== null && row[2].toLowerCase() === wantedSlug) ||
+        aliasOf(row)
       ) {
         candidates.push(row);
       }
+    }
+    // A solo practice is its firm: the person's slug is an alias of the firm
+    // row, so an attorney-typed lookup of that slug still finds the practice.
+    if (candidates.length === 0 && representativeType) {
+      candidates = release.search.entities.filter(aliasOf);
     }
     const coverage = coverageBlock(release, { assets: ["search.json"] });
     if (candidates.length === 0) {

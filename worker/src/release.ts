@@ -44,8 +44,9 @@ export interface McpManifest {
   checksums: Record<string, string>;
 }
 
-// Scan row: [type, id, slug, name_key, home_cc, shard, cohorts, public_slugs?]
-// slug is the export key; public_slugs are the site URL slugs that redirect from it.
+// Scan row: [type, id, slug, name_key, home_cc, shard, cohorts, aliases?]
+// slug is the export key; public_slugs are the site URL slugs that redirect from it
+// and, for a solo practice, its attorney's slug (the person is the firm).
 // Cohort tuple: [jurisdiction, right(asset code), tier, window, rank, score, classes, client_keys]
 export type ScanCohort = [
   string,

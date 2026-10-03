@@ -100,7 +100,7 @@ async function seedRelease(): Promise<void> {
           ["LT", "tm", "national", "long", 1, 91.2, ["9"], ["acme ltd"]],
           ["LT", "tm", "national", "recent", null, 70.0, ["9"], ["beta corp"]],
         ],
-        ["lt-example"],
+        ["lt-example", "lt-solo-person"],
       ],
       [
         "attorney",
@@ -342,6 +342,21 @@ it("profile resolves the site public slug and the export slug", async () => {
   }
   const missing = await callTool("get_ip_representative_profile", { slug: "lt-example-i" });
   expect(missing.status).toBe("not_public");
+});
+
+it("a solo practice is its firm, also when the person is asked for", async () => {
+  for (const representative_type of [undefined, "attorney", "firm"]) {
+    const envelope = await callTool("get_ip_representative_profile", { slug: "lt-solo-person", representative_type });
+    expect(envelope.status).toBe("ok");
+    expect(envelope.data.representative_type).toBe("firm");
+    expect(envelope.data.representative_id).toBe(1);
+  }
+  // A real attorney keeps their own record under a typed lookup.
+  const person = await callTool("get_ip_representative_profile", {
+    slug: "lt-example-person",
+    representative_type: "attorney",
+  });
+  expect(person.data.representative_type).toBe("attorney");
 });
 
 it("market snapshot copies static values", async () => {

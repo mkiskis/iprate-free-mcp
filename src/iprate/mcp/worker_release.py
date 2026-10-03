@@ -129,19 +129,23 @@ def _validated_bytes(live_root: Path, manifest: dict[str, Any], relative_path: s
 _RATED_TIERS = frozenset({"Q1", "Q2", "Q3", "Q4"})
 
 
-def _search_allowlist(live_root: Path, manifest: dict[str, Any]) -> set[tuple[str, int]]:
-    """Attorney allowlist: the site search copies the exported attorney rows unchanged."""
+def _search_allowlist(live_root: Path, manifest: dict[str, Any]) -> tuple[set[tuple[str, int]], dict[int, int]]:
+    """Attorney allowlist (the site search copies the exported attorney rows
+    unchanged) and the solo links the exported firm rows carry."""
     payload = json.loads(_validated_bytes(live_root, manifest, "search-index.json"))
     rows = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(rows, list):
         raise StaticAssetError("search-index.json has no data array")
     allowed: set[tuple[str, int]] = set()
+    solo_links: dict[int, int] = {}
     for row in rows:
         if isinstance(row, dict) and row.get("entity_type") and row.get("entity_id") is not None:
             allowed.add((str(row["entity_type"]), int(row["entity_id"])))
+            if row["entity_type"] == "firm" and row.get("solo_attorney_id") is not None:
+                solo_links[int(row["entity_id"])] = int(row["solo_attorney_id"])
     if not allowed:
         raise StaticAssetError("search-index.json allowlist is empty")
-    return allowed
+    return allowed, solo_links
 
 
 def _public_firm_slugs(registry_path: Path | None) -> tuple[dict[int, str], str | None]:
@@ -181,6 +185,16 @@ def _site_search_lists_firm(profile: dict[str, Any]) -> bool:
     )
 
 
+def _add_alias(row: list[Any], alias: str) -> None:
+    """Match ``alias`` as another slug of a scan row (optional 8th element)."""
+    if alias.casefold() == row[2].casefold():
+        return
+    if len(row) == 7:
+        row.append([])
+    if alias not in row[7]:
+        row[7].append(alias)
+
+
 def _shard_id(entity_type: str, slug: str) -> str:
     return hashlib.sha256(f"{entity_type}:{slug}".encode()).hexdigest()[:2]
 
@@ -207,10 +221,16 @@ def _entity_records(
     manifest: dict[str, Any],
     allowed: set[tuple[str, int]],
     public_slugs: dict[int, str],
+    solo_links: dict[int, int],
 ) -> tuple[list[list[Any]], dict[str, dict[str, Any]], dict[str, int]]:
     scan_rows: list[list[Any]] = []
     shard_records: dict[str, dict[str, Any]] = {}
-    counts = {"firms": 0, "attorneys": 0, "excluded": 0}
+    counts = {"firms": 0, "attorneys": 0, "excluded": 0, "folded": 0}
+    # Solo attorney id -> the scan rows of the firm that is the practice.
+    solo_firm_rows: dict[int, list[list[Any]]] = {}
+    # Slugs a firm answers to in its own right; a folded person's slug never
+    # takes one from another firm (a solo twin may own the person's URL).
+    firm_slug_owner: dict[str, int] = {}
     expected_counts = manifest.get("entity_counts") or {}
     for entity_type, index_path, plural in (
         ("firm", "firms-index.json", "firms"),
@@ -231,6 +251,14 @@ def _entity_records(
             if not isinstance(profile, dict):
                 raise StaticAssetError(f"Profile asset is not an object: {relative_path}")
             entity_id = profile.get("id")
+            if entity_type == "attorney" and entity_id is not None and int(entity_id) in solo_firm_rows:
+                # A solo practice is its firm (owner rule): the person is never
+                # a second representative, and their slug finds the firm.
+                for row in solo_firm_rows[int(entity_id)]:
+                    if firm_slug_owner.get(slug.casefold(), row[1]) == row[1]:
+                        _add_alias(row, slug)
+                counts["folded"] += 1
+                continue
             if entity_id is None or not (
                 _site_search_lists_firm(profile) if entity_type == "firm" else (entity_type, int(entity_id)) in allowed
             ):
@@ -256,8 +284,13 @@ def _entity_records(
             ]
             # The database slug stays the key that cohort files and shards
             # use; the public slug is matched as an alias of it.
-            if public_slug != slug:
-                scan_row.append([public_slug])
+            _add_alias(scan_row, public_slug)
+            if entity_type == "firm":
+                for own in (slug, public_slug):
+                    firm_slug_owner.setdefault(own.casefold(), int(entity_id))
+                solo_attorney_id = profile.get("solo_attorney_id") or solo_links.get(int(entity_id))
+                if solo_attorney_id is not None:
+                    solo_firm_rows.setdefault(int(solo_attorney_id), []).append(scan_row)
             scan_rows.append(scan_row)
             record_key = f"{entity_type}:{slug.casefold()}"
             shard_records.setdefault(shard, {})[record_key] = {
@@ -305,8 +338,8 @@ def build_worker_artifacts(
         raise StaticAssetError("manifest.json has no release_id")
     release_id = str(manifest["release_id"])
 
-    allowed = _search_allowlist(live, manifest)
-    scan_rows, shard_records, counts = _entity_records(live, manifest, allowed, public_slugs or {})
+    allowed, solo_links = _search_allowlist(live, manifest)
+    scan_rows, shard_records, counts = _entity_records(live, manifest, allowed, public_slugs or {}, solo_links)
 
     objects: dict[str, bytes] = {}
     checksums: dict[str, str] = {}

@@ -199,7 +199,7 @@ def test_artifacts_cover_search_shards_and_assets(live_tree: Path) -> None:
 
     manifest = json.loads(objects["mcp-manifest.json"])
     assert manifest["release_id"] == "release-a"
-    assert manifest["mcp_entity_counts"] == {"firms": 1, "attorneys": 1, "excluded": 1}
+    assert manifest["mcp_entity_counts"] == {"firms": 1, "attorneys": 1, "excluded": 1, "folded": 0}
     cohort = manifest["cohorts"]["LT:tm:national"]
     assert cohort["run_id"] == 32
     assert cohort["windows"] == ["long"]
@@ -237,7 +237,12 @@ def test_attorneys_still_follow_the_exported_search_rows(live_tree: Path) -> Non
     _release_id, objects = build_worker_artifacts(live_tree)
     rows = json.loads(objects["search.json"])["entities"]
     assert {(row[0], row[2]) for row in rows} == {("firm", "lt-example-ip")}
-    assert json.loads(objects["mcp-manifest.json"])["mcp_entity_counts"] == {"firms": 1, "attorneys": 0, "excluded": 2}
+    assert json.loads(objects["mcp-manifest.json"])["mcp_entity_counts"] == {
+        "firms": 1,
+        "attorneys": 0,
+        "excluded": 2,
+        "folded": 0,
+    }
 
 
 def test_run_once_activates_then_noops(live_tree: Path) -> None:
@@ -361,3 +366,58 @@ def test_unreadable_registry_keeps_the_export_slug(live_tree: Path, tmp_path: Pa
     row, record = _firm_view(store)
     assert len(row) == 7
     assert record["profile_url"] == "https://iprate.eu/firms/lt-example-ip/"
+
+
+def _make_solo(root: Path, *, in_profile: bool) -> None:
+    profile = json.loads((root / "firms" / "lt-example-ip.json").read_text(encoding="utf-8"))
+    if in_profile:
+        profile["solo_attorney_id"] = 1
+    _write_json(root / "firms" / "lt-example-ip.json", profile)
+    rows = [
+        {"entity_type": "firm", "entity_id": 1, "slug": "lt-example-ip", "solo_attorney_id": None if in_profile else 1},
+        {"entity_type": "attorney", "entity_id": 1, "slug": "lt-example-person"},
+    ]
+    _replace_search_index(root, rows)
+
+
+@pytest.mark.parametrize("in_profile", [True, False], ids=["profile-link", "exported-row-link"])
+def test_solo_practice_is_one_firm_and_the_person_finds_it(live_tree: Path, in_profile: bool) -> None:
+    _make_solo(live_tree, in_profile=in_profile)
+    _release_id, objects = build_worker_artifacts(live_tree)
+    rows = json.loads(objects["search.json"])["entities"]
+    assert [(row[0], row[2]) for row in rows] == [("firm", "lt-example-ip")]
+    assert rows[0][7] == ["lt-example-person"]
+    counts = json.loads(objects["mcp-manifest.json"])["mcp_entity_counts"]
+    assert counts == {"firms": 1, "attorneys": 0, "excluded": 1, "folded": 1}
+    for key, body in objects.items():
+        assert b"attorney:lt-example-person" not in body, key
+
+
+def test_solo_fold_keeps_the_public_slug_alias(live_tree: Path, tmp_path: Path) -> None:
+    _make_solo(live_tree, in_profile=True)
+    registry = tmp_path / "public-url-registry.json"
+    _write_json(registry, {"firms": {"1": {"slug": "lt-example", "aliases": ["lt-example-ip"]}}})
+    store = FakeStore()
+    run_once(live_tree, store, settle_seconds=0, public_url_registry=registry)
+    row, record = _firm_view(store)
+    assert row[7] == ["lt-example", "lt-example-person"]
+    assert record["profile_url"] == "https://iprate.eu/firms/lt-example/"
+
+
+def test_folded_person_never_takes_another_firms_own_slug(live_tree: Path) -> None:
+    # Solo twin: the person's slug is the other firm's own URL slug.
+    _make_solo(live_tree, in_profile=True)
+    twin = json.loads((live_tree / "firms" / "lt-example-ip.json").read_text(encoding="utf-8"))
+    twin.update(id=3, slug="lt-example-person", solo_attorney_id=None)
+    _write_json(live_tree / "firms" / "lt-example-person.json", twin)
+    manifest = json.loads((live_tree / "manifest.json").read_text(encoding="utf-8"))
+    manifest["global_files"]["firms-index.json"] = _write_json(
+        live_tree / "firms-index.json", {"slugs": ["lt-example-ip", "lt-example-person", "lt-unrated-shell"]}
+    )
+    manifest["entity_counts"]["firms"] = 3
+    _write_json(live_tree / "manifest.json", manifest)
+    clear_caches()
+    _release_id, objects = build_worker_artifacts(live_tree, {1: "lt-example"})
+    rows = {row[1]: row for row in json.loads(objects["search.json"])["entities"] if row[0] == "firm"}
+    assert rows[1][7] == ["lt-example"]  # the person's slug stays with firm 3, which owns it
+    assert len(rows[3]) == 7
