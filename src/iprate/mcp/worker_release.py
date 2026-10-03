@@ -126,8 +126,11 @@ def _validated_bytes(live_root: Path, manifest: dict[str, Any], relative_path: s
     return payload
 
 
+_RATED_TIERS = frozenset({"Q1", "Q2", "Q3", "Q4"})
+
+
 def _search_allowlist(live_root: Path, manifest: dict[str, Any]) -> set[tuple[str, int]]:
-    """Published-search allowlist: the same exclusions the public site search applies."""
+    """Attorney allowlist: the site search copies the exported attorney rows unchanged."""
     payload = json.loads(_validated_bytes(live_root, manifest, "search-index.json"))
     rows = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(rows, list):
@@ -163,6 +166,19 @@ def _public_firm_slugs(registry_path: Path | None) -> tuple[dict[int, str], str 
         _log("public_url_registry_unavailable", path=str(registry_path), reason=str(exc))
         return {}, None
     return slugs, hashlib.sha256(raw).hexdigest()[:16]
+
+
+def _site_search_lists_firm(profile: dict[str, Any]) -> bool:
+    """The site search lists every firm profile with a rated cohort.
+
+    The site build derives its firm rows from the profiles in firms-index.json
+    (prepare-profile-publication.mjs, pickFirmCohort), not from the exported
+    search-index.json, which indexes most solo practices only as the person.
+    """
+    return any(
+        isinstance(cohort, dict) and (cohort.get("scores") or {}).get("score_tier") in _RATED_TIERS
+        for cohort in (profile.get("cohorts") or {}).values()
+    )
 
 
 def _shard_id(entity_type: str, slug: str) -> str:
@@ -215,7 +231,9 @@ def _entity_records(
             if not isinstance(profile, dict):
                 raise StaticAssetError(f"Profile asset is not an object: {relative_path}")
             entity_id = profile.get("id")
-            if entity_id is None or (str(entity_type), int(entity_id)) not in allowed:
+            if entity_id is None or not (
+                _site_search_lists_firm(profile) if entity_type == "firm" else (entity_type, int(entity_id)) in allowed
+            ):
                 counts["excluded"] += 1
                 continue
             cohorts = [

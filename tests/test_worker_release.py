@@ -39,11 +39,11 @@ def _write_json(path: Path, payload: object) -> str:
     return hashlib.sha256(encoded).hexdigest()[:8]
 
 
-def _cohort_payload(*, rank: int | None, score: float, client: str) -> dict[str, object]:
+def _cohort_payload(*, rank: int | None, score: float, client: str, tier: str | None = "Q1") -> dict[str, object]:
     return {
         "scores": {
             "aggregate_score": score,
-            "score_tier": "Q1",
+            "score_tier": tier,
             "confidence_grade": "A",
             "publication_rank": rank,
             "denominators": {"case_units": 123},
@@ -73,14 +73,14 @@ def _build_live_tree(root: Path, *, release_id: str, applications_total: int = 7
         },
     )
     _write_json(
-        root / "firms" / "lt-blocked-selffiler.json",
+        root / "firms" / "lt-unrated-shell.json",
         {
             "id": 2,
-            "name": "Blocked Self Filer",
-            "slug": "lt-blocked-selffiler",
+            "name": "Unrated Shell",
+            "slug": "lt-unrated-shell",
             "city": "Vilnius",
             "country_code": "LT",
-            "cohorts": {"lt|tm|national|long": _cohort_payload(rank=2, score=80.0, client="ACME Ltd")},
+            "cohorts": {"lt|tm|national|long": _cohort_payload(rank=None, score=80.0, client="ACME Ltd", tier=None)},
         },
     )
     _write_json(
@@ -95,9 +95,7 @@ def _build_live_tree(root: Path, *, release_id: str, applications_total: int = 7
         },
     )
     global_files = {
-        "firms-index.json": _write_json(
-            root / "firms-index.json", {"slugs": ["lt-blocked-selffiler", "lt-example-ip"]}
-        ),
+        "firms-index.json": _write_json(root / "firms-index.json", {"slugs": ["lt-example-ip", "lt-unrated-shell"]}),
         "attorneys-index.json": _write_json(root / "attorneys-index.json", {"slugs": ["lt-example-person"]}),
         "analytics_stats.json": _write_json(root / "analytics_stats.json", {"total": {"records": 1000}}),
         "search-index.json": _write_json(
@@ -209,11 +207,37 @@ def test_artifacts_cover_search_shards_and_assets(live_tree: Path) -> None:
     assert set(manifest["checksums"]) == set(objects) - {"mcp-manifest.json"}
 
 
-def test_blocked_self_filer_is_excluded_everywhere(live_tree: Path) -> None:
+def test_firm_the_site_search_omits_is_excluded_everywhere(live_tree: Path) -> None:
     _release_id, objects = build_worker_artifacts(live_tree)
     for key, body in objects.items():
-        assert b"lt-blocked-selffiler" not in body, key
-        assert b"Blocked Self Filer" not in body, key
+        assert b"lt-unrated-shell" not in body, key
+        assert b"Unrated Shell" not in body, key
+
+
+def _replace_search_index(root: Path, rows: list[dict[str, object]]) -> None:
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    manifest["global_files"]["search-index.json"] = _write_json(
+        root / "search-index.json", {"data": rows, "meta": {"count": len(rows)}}
+    )
+    _write_json(root / "manifest.json", manifest)
+    clear_caches()
+
+
+def test_rated_firm_is_listed_without_an_exported_search_row(live_tree: Path) -> None:
+    # Solo practices are exported to search-index.json only as the person; the
+    # site still lists the firm because its profile carries a rated cohort.
+    _replace_search_index(live_tree, [{"entity_type": "attorney", "entity_id": 1, "slug": "lt-example-person"}])
+    _release_id, objects = build_worker_artifacts(live_tree)
+    rows = json.loads(objects["search.json"])["entities"]
+    assert {(row[0], row[2]) for row in rows} == {("firm", "lt-example-ip"), ("attorney", "lt-example-person")}
+
+
+def test_attorneys_still_follow_the_exported_search_rows(live_tree: Path) -> None:
+    _replace_search_index(live_tree, [{"entity_type": "firm", "entity_id": 1, "slug": "lt-example-ip"}])
+    _release_id, objects = build_worker_artifacts(live_tree)
+    rows = json.loads(objects["search.json"])["entities"]
+    assert {(row[0], row[2]) for row in rows} == {("firm", "lt-example-ip")}
+    assert json.loads(objects["mcp-manifest.json"])["mcp_entity_counts"] == {"firms": 1, "attorneys": 0, "excluded": 2}
 
 
 def test_run_once_activates_then_noops(live_tree: Path) -> None:
