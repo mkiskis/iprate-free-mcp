@@ -351,6 +351,13 @@ it("a solo practice is its firm, also when the person is asked for", async () =>
     expect(envelope.data.representative_type).toBe("firm");
     expect(envelope.data.representative_id).toBe(1);
   }
+  // The person's slug can equal the firm's own key; the builder then adds no alias.
+  const sameKey = await callTool("get_ip_representative_profile", {
+    slug: "lt-example-ip",
+    representative_type: "attorney",
+  });
+  expect(sameKey.status).toBe("ok");
+  expect(sameKey.data.representative_type).toBe("firm");
   // A real attorney keeps their own record under a typed lookup.
   const person = await callTool("get_ip_representative_profile", {
     slug: "lt-example-person",

@@ -414,9 +414,12 @@ export async function getIpRepresentativeProfile(env: Env, args: ProfileArgument
       }
     }
     // A solo practice is its firm: the person's slug is an alias of the firm
-    // row, so an attorney-typed lookup of that slug still finds the practice.
+    // row, or its key when the two slugs coincide, so an attorney-typed lookup
+    // of that slug still finds the practice.
     if (candidates.length === 0 && representativeType) {
-      candidates = release.search.entities.filter(aliasOf);
+      candidates = release.search.entities.filter(
+        (row) => (wantedSlug !== null && row[2].toLowerCase() === wantedSlug) || aliasOf(row),
+      );
     }
     const coverage = coverageBlock(release, { assets: ["search.json"] });
     if (candidates.length === 0) {
