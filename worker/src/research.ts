@@ -92,6 +92,7 @@ const TOKEN_HINTS: Record<string, Hint> = {
   euipo: { tier: "euro" },
   epo: { tier: "euro" },
   national: { tier: "national" },
+  long: { window: "long" },
   recent: { window: "recent" },
   emerging: { window: "recent" },
   coverage: { coverage: true },
@@ -107,6 +108,8 @@ const PHRASE_HINTS: Array<[string, Hint]> = [
   ["community designs", { right: "design", tier: "euro" }],
   ["community design", { right: "design", tier: "euro" }],
   ["european union", { tier: "euro" }],
+  ["european route", { tier: "euro" }],
+  ["national route", { tier: "national" }],
 ];
 
 // Words that frame a question about counsel without naming anyone.
@@ -123,7 +126,8 @@ const STOPWORDS = new Set(
     "versus vs like more than other year years success rate rates performance outcome outcomes quality experience " +
     "experienced reputation review reviews alternative alternatives driven based way ways calculated calculate " +
     "calculation computed compute methodology method methods work works cost costs price prices fee fees cheap " +
-    "affordable local foreign international abroad service services help advice question questions " +
+    "affordable local foreign international abroad service services help advice question questions research " +
+    "researching cite source sources according work working route routes window named called show " +
     "beste besten der die das und fur anwalt anwalte kanzlei kanzleien mejores mejor agentes abogados de del la el en " +
     "los las y meilleurs meilleur avocats conseils migliori avvocati consulenti najlepsi rzecznicy w kas yra geriausi " +
     "patiketiniai patentiniai"
@@ -191,7 +195,7 @@ export function parseQuery(raw: string): ParsedQuery {
       applyHint(parsed, hint);
       continue;
     }
-    if (STOPWORDS.has(token) || /^(19|20)\d\d$/.test(token)) continue;
+    if (token.length < 2 || STOPWORDS.has(token) || /^(19|20)\d\d$/.test(token)) continue;
     parsed.nameTokens.push(token);
   }
   return parsed;
@@ -263,13 +267,20 @@ async function nameResults(release: Release, parsed: ParsedQuery): Promise<Searc
     }
     return found;
   };
-  const whole = (nameKey: string) => nameKey.includes(key);
-  const everyToken = (nameKey: string) => parsed.nameTokens.every((token) => nameKey.includes(token));
-  let matches = collect(whole, filters);
-  if (matches.length === 0) matches = collect(whole, unfiltered);
-  if (matches.length === 0 && parsed.nameTokens.length > 1) {
-    matches = collect(everyToken, filters);
-    if (matches.length === 0) matches = collect(everyToken, unfiltered);
+  // Prefer matches that start at a word ("forma" finds "ip forma", not
+  // "information"); fall back to plain substring matching as find does.
+  const atWordStart = (nameKey: string, fragment: string) =>
+    nameKey.startsWith(fragment) || nameKey.includes(` ${fragment}`);
+  const predicates: Array<(nameKey: string) => boolean> = [
+    (nameKey) => atWordStart(nameKey, key),
+    (nameKey) => parsed.nameTokens.every((token) => atWordStart(nameKey, token)),
+    (nameKey) => nameKey.includes(key),
+  ];
+  let matches: Array<{ row: ScanRow; cohort: ScanCohort }> = [];
+  for (const predicate of predicates) {
+    matches = collect(predicate, filters);
+    if (matches.length === 0) matches = collect(predicate, unfiltered);
+    if (matches.length > 0) break;
   }
   matches.sort((a, b) => {
     const exactA = a.row[3] === key ? 0 : 1;

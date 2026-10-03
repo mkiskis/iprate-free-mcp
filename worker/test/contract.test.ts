@@ -8,6 +8,7 @@ import { beforeEach, expect, it } from "vitest";
 
 import worker from "../src/index";
 import { resetReleaseCache } from "../src/release";
+import { parseQuery } from "../src/research";
 
 const RELEASE_ID = "test-release";
 const PREFIX = `releases/${RELEASE_ID}/build1/`;
@@ -613,4 +614,32 @@ it("serves the OpenAI domain-verification token only when configured", async () 
 
   const posted = await worker.fetch(new Request(path, { method: "POST" }), configured as never);
   expect(posted.status).toBe(405);
+});
+
+it("parses review and starter prompts into filters without stray name words", () => {
+  const cases: Array<[string, string[], string | null, string | null]> = [
+    ["Using IPRATE, research which firms lead patent work in Germany and cite your sources.", ["DE"], "patent", null],
+    ["Which firms lead trademark work in Lithuania according to IPRATE?", ["LT"], "trademark", null],
+    ["Show IPRATE's German patent market snapshot for the European route.", ["DE"], "patent", "euro"],
+    ["Find IPRATE-rated design firms in Denmark.", ["DK"], "design", null],
+    ["Show IPRATE's Lithuanian national trademark market snapshot for the long window.", ["LT"], "trademark", "national"],
+    ["beste Markenanwälte in Deutschland", ["DE"], "trademark", null],
+  ];
+  for (const [query, jurisdictions, right, tier] of cases) {
+    const parsed = parseQuery(query);
+    expect(parsed.nameTokens, query).toEqual([]);
+    expect(parsed.jurisdictions, query).toEqual(jurisdictions);
+    expect(parsed.right, query).toBe(right);
+    expect(parsed.tier, query).toBe(tier);
+  }
+});
+
+it("search prefers names that start at a word and falls back to substrings", async () => {
+  const person = await callResult("search", { query: "person" });
+  expect(person.structuredContent.results.map((entry: any) => entry.id)).toEqual(["attorney:lt-example-person"]);
+
+  const fragment = await callResult("search", { query: "xample" });
+  const ids = fragment.structuredContent.results.map((entry: any) => entry.id);
+  expect(ids).toContain("firm:lt-example-ip");
+  expect(ids).toContain("attorney:lt-example-person");
 });
