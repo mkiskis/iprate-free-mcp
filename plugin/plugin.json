@@ -19,7 +19,7 @@
         "shortDescription": "European IP data and ratings",
         "longDescription": "IPRATE helps you research European intellectual-property firms, attorneys and markets from the evidence IPRATE publishes. IPRATE rates IP firms and attorneys in 32 European countries from official filing and outcome records at EUIPO, the EPO and national IP offices, under a published methodology.\n\nUse it to find published firms or attorneys by name, country, right type (trademark, design or patent), leading Nice class, or published leading-client evidence; to read a representative's public profile with its released ratings, confidence grades and activity measures; to view a market snapshot with released statistics and the leading firms; and to check which countries, right types and analytical windows the current release covers. Search and fetch tools support deep research with citable links to IPRATE pages. A bundled workflow helps shortlist counsel for a trademark, design or patent matter.\n\nEvery result names the data release it comes from and links to public IPRATE pages and the methodology. Results are bounded: at most five representatives or cohort summaries per call and at most ten documents per search.\n\nLegal advice, registrability or infringement opinions, raw register search, bulk data, monitoring, filing and account actions are outside this plugin. Ratings describe register outcomes; they do not establish service quality or current availability. No account or API key is required.",
         "developerName": "Socialiniai algoritmai, UAB",
-        "category": "Business",
+        "category": "Data & Analytics",
         "capabilities": [
           "Find IP firms and attorneys",
           "Read published representative profiles",
