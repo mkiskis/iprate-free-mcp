@@ -93,7 +93,8 @@
           ]
         },
         "commerce": false,
-        "commerce_description": "IPRATE does not sell products or process payments in ChatGPT."
+        "commerce_description": "IPRATE does not sell products or process payments in ChatGPT.",
+        "demo_recording_url": "https://drive.google.com/file/d/1fVBWuk69AojGh5LAye2tTf3pih-ajwHl/view"
       },
       "publication": {
         "release_notes": "Initial directory release. Six read-only tools over IPRATE's published static release (find_ip_representatives, get_ip_representative_profile, get_ip_market_snapshot, get_iprate_coverage, search, fetch) and a counsel-shortlisting skill."
