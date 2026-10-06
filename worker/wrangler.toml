@@ -15,7 +15,7 @@ ASSET_BASE_URL = "https://iprate.eu/data/v1"
 # Domain-verification token from the OpenAI plugin portal, served as plain text
 # at /.well-known/openai-apps-challenge. Keep it here once issued: wrangler
 # deploy replaces variables set only in the dashboard.
-# OPENAI_APPS_CHALLENGE = "<token from the portal>"
+OPENAI_APPS_CHALLENGE = "6I_YbFBQRddZJNZcNOMxALDwHHygeufocCCCpHWNMf4"
 
 [[r2_buckets]]
 binding = "RELEASES"
