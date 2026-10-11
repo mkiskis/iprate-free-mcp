@@ -227,6 +227,19 @@ def test_coverage_comes_from_manifest_and_analytics(static_release: Path) -> Non
     assert result.data["cohorts"][0]["run_id"] == 32
 
 
+def test_coverage_reads_declared_capabilities(static_release: Path) -> None:
+    path = static_release / 'manifest.json'
+    manifest = json.loads(path.read_text(encoding='utf-8'))
+    payload = {'registers': [{'office': 'LT', 'records': 42}], 'products': []}
+    manifest['global_files']['coverage_table.json'] = _write_json(static_release / 'coverage_table.json', payload)
+    _write_json(path, manifest)
+    clear_caches()
+    assert get_iprate_coverage_result().data['capability_table'] == payload
+    _write_json(static_release / 'coverage_table.json', {'registers': []})
+    clear_caches()
+    assert get_iprate_coverage_result().status == 'source_unavailable'
+
+
 def test_checksum_mismatch_fails_closed(static_release: Path) -> None:
     path = static_release / "lt" / "tm" / "national" / "long" / "stats.json"
     payload = json.loads(path.read_text(encoding="utf-8"))

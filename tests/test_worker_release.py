@@ -220,6 +220,20 @@ def test_firm_the_site_search_omits_is_excluded_everywhere(live_tree: Path) -> N
         assert b"Unrated Shell" not in body, key
 
 
+def test_capability_table_is_copied_and_verified(live_tree: Path) -> None:
+    manifest = json.loads((live_tree / "manifest.json").read_text(encoding="utf-8"))
+    payload = {"registers": [{"office": "LT", "records": 42}], "products": []}
+    manifest["global_files"]["coverage_table.json"] = _write_json(live_tree / "coverage_table.json", payload)
+    _write_json(live_tree / "manifest.json", manifest)
+    clear_caches()
+    _, objects = build_worker_artifacts(live_tree)
+    assert json.loads(objects["assets/coverage_table.json"]) == payload
+    _write_json(live_tree / "coverage_table.json", {"registers": []})
+    clear_caches()
+    with pytest.raises(StaticAssetError):
+        build_worker_artifacts(live_tree)
+
+
 def _replace_search_index(root: Path, rows: list[dict[str, object]]) -> None:
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     manifest["global_files"]["search-index.json"] = _write_json(

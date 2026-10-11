@@ -454,6 +454,8 @@ def build_worker_artifacts(
         }
 
     add("assets/analytics_stats.json", _validated_bytes(live, manifest, "analytics_stats.json"))
+    if "coverage_table.json" in (manifest.get("global_files") or {}):
+        add("assets/coverage_table.json", _validated_bytes(live, manifest, "coverage_table.json"))
 
     add(
         "mcp-manifest.json",

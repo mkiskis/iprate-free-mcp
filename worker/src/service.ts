@@ -621,6 +621,9 @@ export async function getIprateCoverage(env: Env, args: CoverageArguments): Prom
       });
     }
     const analytics = await release.asset("analytics_stats.json");
+    const capabilityTable = release.manifest.checksums["assets/coverage_table.json"]
+      ? await release.asset("coverage_table.json") : null;
+    if (capabilityTable !== null) assets.push("coverage_table.json");
     const status = release.manifest.status;
     const holdState = status === "warning" || status === "degraded" ? "partial" : "held";
     return respond(env, "ok", {
@@ -630,6 +633,7 @@ export async function getIprateCoverage(env: Env, args: CoverageArguments): Prom
         cohorts: matching,
         published_profile_counts: release.manifest.entity_counts ?? {},
         holdings: analytics,
+        ...(capabilityTable !== null ? { capability_table: capabilityTable } : {}),
         supported_field_groups: [
           "published representative identity and profile",
           "released cohort rankings and ratings",

@@ -11,7 +11,7 @@ from urllib.parse import quote
 from pydantic import BaseModel, ConfigDict, Field
 
 from iprate.mcp import MCP_SERVER_VERSION
-from iprate.mcp.assets import ReleaseSnapshot, StaticAssetError, load_release, normalise_text
+from iprate.mcp.assets import ReleaseSnapshot, StaticAssetError, declared_checksum, load_release, normalise_text
 
 Status = Literal[
     "ok",
@@ -607,6 +607,10 @@ def get_iprate_coverage_result(
                 source_urls=[_asset_url(path) for path in assets],
             )
         analytics = release.read_json("analytics_stats.json", verify_declared=True)
+        capability_table = None
+        if declared_checksum(release.manifest, "coverage_table.json"):
+            capability_table = release.read_json("coverage_table.json", verify_declared=True)
+            assets.append("coverage_table.json")
         hold_state = "partial" if release.manifest.get("status") in {"warning", "degraded"} else "held"
         return _response(
             "ok",
@@ -616,6 +620,7 @@ def get_iprate_coverage_result(
                 "cohorts": matching,
                 "published_profile_counts": release.manifest.get("entity_counts") or {},
                 "holdings": analytics,
+                **({"capability_table": capability_table} if capability_table is not None else {}),
                 "supported_field_groups": [
                     "published representative identity and profile",
                     "released cohort rankings and ratings",

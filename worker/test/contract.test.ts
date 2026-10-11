@@ -407,6 +407,21 @@ it("checksum mismatches fail closed", async () => {
   expect(envelope.coverage.error_type).toBe("StaticAssetError");
 });
 
+it("coverage includes the declared capability table and checks its checksum", async () => {
+  const body = encode({ basis: "snapshot", registers: [{ office: "LT", records: 42 }], products: [] });
+  const object = await env.RELEASES.get(`${PREFIX}mcp-manifest.json`);
+  const manifest = await object!.json() as any;
+  manifest.checksums["assets/coverage_table.json"] = await sha16(body);
+  await env.RELEASES.put(`${PREFIX}assets/coverage_table.json`, body);
+  await env.RELEASES.put(`${PREFIX}mcp-manifest.json`, encode(manifest));
+  resetReleaseCache();
+  const response = await callTool("get_iprate_coverage");
+  expect(response.data.capability_table.registers[0].records).toBe(42);
+  await env.RELEASES.put(`${PREFIX}assets/coverage_table.json`, encode({ registers: [] }));
+  resetReleaseCache();
+  expect((await callTool("get_iprate_coverage")).status).toBe("source_unavailable");
+});
+
 it("mixed-release indexes fail closed", async () => {
   const search = { schema: 1, release_id: "different-release", entities: [] };
   await env.RELEASES.put(`${PREFIX}search.json`, encode(search));
