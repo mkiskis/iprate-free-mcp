@@ -19,6 +19,44 @@ selections from one completed IPRATE static release through six tools:
 Every tool declares an output schema. The Python package in `src/` is the self-host
 reference implementation of the first four tools.
 
+## Connect from your assistant
+
+Free path, no account and no key.
+
+Claude Code:
+
+```bash
+claude mcp add --transport http iprate https://mcp.iprate.eu/mcp
+```
+
+Claude Desktop and claude.ai: Settings, Connectors, add a custom connector with the
+URL `https://mcp.iprate.eu/mcp`.
+
+Cursor (`~/.cursor/mcp.json`):
+
+```json
+{ "mcpServers": { "iprate": { "url": "https://mcp.iprate.eu/mcp" } } }
+```
+
+ChatGPT: a developer-mode custom connector for one user, or a workspace connector
+added by a Business or Enterprise admin. Deep research uses the `search` and `fetch`
+tools.
+
+OpenAI Responses API:
+
+```json
+{ "type": "mcp", "server_label": "iprate", "server_url": "https://mcp.iprate.eu/mcp", "require_approval": "never" }
+```
+
+Paid Data API path, with the key issued in your IPRATE account:
+
+```bash
+claude mcp add --transport http iprate-data https://mcp.iprate.eu/data-api/mcp --header "X-IPRATE-API-Key: YOUR_KEY"
+```
+
+Prices and the order flow are on https://iprate.eu/developers/data-api/. The setup
+page with the same steps is https://iprate.eu/developers/mcp/.
+
 The same Worker also contains a separate paid Data API adapter at:
 
 ```text
