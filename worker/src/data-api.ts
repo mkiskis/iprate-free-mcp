@@ -367,8 +367,16 @@ export async function callPaidTool(
     method: request.method ?? "GET",
     headers,
     body: request.body === undefined ? undefined : JSON.stringify(request.body),
-    redirect: "error",
+    // The Workers runtime supports "follow" and "manual" only. A redirect from
+    // the Data API is never expected and is never followed.
+    redirect: "manual",
   });
+  if (response.status >= 300 && response.status < 400) {
+    return {
+      status: 502,
+      body: { error: { code: "upstream_redirect", message: "Data API answered with a redirect" } },
+    };
+  }
   let body: unknown;
   try {
     body = await response.json();
