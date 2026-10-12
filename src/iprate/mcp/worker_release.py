@@ -126,19 +126,137 @@ def _validated_bytes(live_root: Path, manifest: dict[str, Any], relative_path: s
     return payload
 
 
-def _search_allowlist(live_root: Path, manifest: dict[str, Any]) -> set[tuple[str, int]]:
-    """Published-search allowlist: the same exclusions the public site search applies."""
+_RATED_TIERS = frozenset({"Q1", "Q2", "Q3", "Q4"})
+
+
+def _search_allowlist(live_root: Path, manifest: dict[str, Any]) -> tuple[set[tuple[str, int]], dict[int, int]]:
+    """Attorney allowlist (the site search copies the exported attorney rows
+    unchanged) and the solo links the exported firm rows carry."""
     payload = json.loads(_validated_bytes(live_root, manifest, "search-index.json"))
     rows = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(rows, list):
         raise StaticAssetError("search-index.json has no data array")
     allowed: set[tuple[str, int]] = set()
+    solo_links: dict[int, int] = {}
     for row in rows:
         if isinstance(row, dict) and row.get("entity_type") and row.get("entity_id") is not None:
             allowed.add((str(row["entity_type"]), int(row["entity_id"])))
+            if row["entity_type"] == "firm" and row.get("solo_attorney_id") is not None:
+                solo_links[int(row["entity_id"])] = int(row["solo_attorney_id"])
     if not allowed:
         raise StaticAssetError("search-index.json allowlist is empty")
-    return allowed
+    return allowed, solo_links
+
+
+def _public_firm_slugs(registry_path: Path | None) -> tuple[dict[int, str], str | None]:
+    """Firm id -> public profile slug, as the site allocates it, and the registry digest.
+
+    The export tree names firms by their database slug; the site build gives
+    each firm a public slug from its append-only URL registry and redirects
+    the database slug to it. The family slug wins, as on the site. Without a
+    readable registry the database slug stays the public one.
+    """
+    if registry_path is None:
+        return {}, None
+    try:
+        raw = registry_path.read_bytes()
+        registry = json.loads(raw)
+        families = registry.get("families") or {}
+        slugs = {
+            int(firm_id): str((families.get(firm_id) or {}).get("slug") or entry["slug"])
+            for firm_id, entry in registry["firms"].items()
+        }
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        _log("public_url_registry_unavailable", path=str(registry_path), reason=str(exc))
+        return {}, None
+    return slugs, hashlib.sha256(raw).hexdigest()[:16]
+
+
+def _retired_firm_aliases(registry_path: Path | None) -> dict[str, int]:
+    """Slug of a merged firm -> the surviving firm id, as the site redirects it.
+
+    The registry keeps every retired record with its ``merged_into`` target and
+    the aliases a reviewed merge retired; merge chains end at the survivor.
+    """
+    if registry_path is None:
+        return {}
+    try:
+        registry = json.loads(registry_path.read_bytes())
+        firms = registry["firms"]
+
+        def survivor(firm_id: int) -> int:
+            seen = set()
+            while (firms.get(str(firm_id)) or {}).get("merged_into") and firm_id not in seen:
+                seen.add(firm_id)
+                firm_id = int(firms[str(firm_id)]["merged_into"])
+            return firm_id
+
+        aliases = {
+            str(alias): survivor(int(target)) for alias, target in (registry.get("retired_aliases") or {}).items()
+        }
+        for firm_id, entry in firms.items():
+            if entry.get("merged_into"):
+                for alias in [entry.get("slug"), *(entry.get("aliases") or [])]:
+                    if alias:
+                        aliases.setdefault(str(alias), survivor(int(firm_id)))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        _log("public_url_registry_unavailable", path=str(registry_path), reason=str(exc))
+        return {}
+    return aliases
+
+
+def _add_retired_aliases(
+    scan_rows: list[list[Any]], retired_firms: dict[str, int], retired_attorneys: dict[str, str]
+) -> int:
+    """Old slugs of merged records find their survivor, as the site's redirects do.
+
+    A retired attorney whose survivor is a solo practice finds the firm row the
+    person was folded into. A slug that any record answers to stays with it.
+    """
+    owned: set[str] = set()
+    folded: dict[str, list[Any]] = {}
+    for row in scan_rows:
+        owned.add(row[2].casefold())
+        for alias in row[7] if len(row) > 7 else []:
+            owned.add(alias.casefold())
+            if row[0] == "firm":
+                folded.setdefault(alias.casefold(), row)
+    firms = {row[1]: row for row in scan_rows if row[0] == "firm"}
+    attorneys = {row[2].casefold(): row for row in scan_rows if row[0] == "attorney"}
+    targets = [(alias, firms.get(firm_id)) for alias, firm_id in retired_firms.items() if not alias.isdigit()]
+    targets += [
+        (old, attorneys.get(live.casefold()) or folded.get(live.casefold())) for old, live in retired_attorneys.items()
+    ]
+    added = 0
+    for alias, row in targets:
+        if row is not None and alias.casefold() not in owned:
+            _add_alias(row, alias)
+            owned.add(alias.casefold())
+            added += 1
+    return added
+
+
+def _site_search_lists_firm(profile: dict[str, Any]) -> bool:
+    """The site search lists every firm profile with a rated cohort.
+
+    The site build derives its firm rows from the profiles in firms-index.json
+    (prepare-profile-publication.mjs, pickFirmCohort), not from the exported
+    search-index.json, which indexes most solo practices only as the person.
+    """
+    return any(
+        isinstance(cohort, dict) and (cohort.get("scores") or {}).get("score_tier") in _RATED_TIERS
+        for cohort in (profile.get("cohorts") or {}).values()
+    )
+
+
+def _add_alias(row: list[Any], alias: str) -> None:
+    """Match ``alias`` as another slug of a scan row (optional 8th element)."""
+    if alias.casefold() == row[2].casefold():
+        return
+    if len(row) == 7:
+        row.append([])
+    if alias not in row[7]:
+        row[7].append(alias)
 
 
 def _shard_id(entity_type: str, slug: str) -> str:
@@ -166,10 +284,17 @@ def _entity_records(
     live_root: Path,
     manifest: dict[str, Any],
     allowed: set[tuple[str, int]],
+    public_slugs: dict[int, str],
+    solo_links: dict[int, int],
 ) -> tuple[list[list[Any]], dict[str, dict[str, Any]], dict[str, int]]:
     scan_rows: list[list[Any]] = []
     shard_records: dict[str, dict[str, Any]] = {}
-    counts = {"firms": 0, "attorneys": 0, "excluded": 0}
+    counts = {"firms": 0, "attorneys": 0, "excluded": 0, "folded": 0}
+    # Solo attorney id -> the scan rows of the firm that is the practice.
+    solo_firm_rows: dict[int, list[list[Any]]] = {}
+    # Slugs a firm answers to in its own right; a folded person's slug never
+    # takes one from another firm (a solo twin may own the person's URL).
+    firm_slug_owner: dict[str, int] = {}
     expected_counts = manifest.get("entity_counts") or {}
     for entity_type, index_path, plural in (
         ("firm", "firms-index.json", "firms"),
@@ -190,7 +315,17 @@ def _entity_records(
             if not isinstance(profile, dict):
                 raise StaticAssetError(f"Profile asset is not an object: {relative_path}")
             entity_id = profile.get("id")
-            if entity_id is None or (str(entity_type), int(entity_id)) not in allowed:
+            if entity_type == "attorney" and entity_id is not None and int(entity_id) in solo_firm_rows:
+                # A solo practice is its firm (owner rule): the person is never
+                # a second representative, and their slug finds the firm.
+                for row in solo_firm_rows[int(entity_id)]:
+                    if firm_slug_owner.get(slug.casefold(), row[1]) == row[1]:
+                        _add_alias(row, slug)
+                counts["folded"] += 1
+                continue
+            if entity_id is None or not (
+                _site_search_lists_firm(profile) if entity_type == "firm" else (entity_type, int(entity_id)) in allowed
+            ):
                 counts["excluded"] += 1
                 continue
             cohorts = [
@@ -201,27 +336,36 @@ def _entity_records(
             cohorts.sort(key=_cohort_priority)
             shard = _shard_id(entity_type, slug)
             name_key = normalise_text(str(profile.get("name") or ""))
-            scan_rows.append(
-                [
-                    entity_type,
-                    int(entity_id),
-                    slug,
-                    name_key,
-                    profile.get("country_code"),
-                    shard,
-                    [_scan_cohort(cohort) for cohort in cohorts],
-                ]
-            )
+            public_slug = public_slugs.get(int(entity_id), slug) if entity_type == "firm" else slug
+            scan_row = [
+                entity_type,
+                int(entity_id),
+                slug,
+                name_key,
+                profile.get("country_code"),
+                shard,
+                [_scan_cohort(cohort) for cohort in cohorts],
+            ]
+            # The database slug stays the key that cohort files and shards
+            # use; the public slug is matched as an alias of it.
+            _add_alias(scan_row, public_slug)
+            if entity_type == "firm":
+                for own in (slug, public_slug):
+                    firm_slug_owner.setdefault(own.casefold(), int(entity_id))
+                solo_attorney_id = profile.get("solo_attorney_id") or solo_links.get(int(entity_id))
+                if solo_attorney_id is not None:
+                    solo_firm_rows.setdefault(int(solo_attorney_id), []).append(scan_row)
+            scan_rows.append(scan_row)
             record_key = f"{entity_type}:{slug.casefold()}"
             shard_records.setdefault(shard, {})[record_key] = {
                 "representative_type": entity_type,
                 "representative_id": int(entity_id),
                 "quoted_name": _safe_text(profile.get("name")),
-                "slug": slug,
+                "slug": public_slug,
                 "home_country_code": profile.get("country_code"),
                 "city": _safe_text(profile.get("city"), limit=256),
                 "cohorts": [_public_cohort(cohort) for cohort in cohorts],
-                "profile_url": _profile_url(entity_type, slug),
+                "profile_url": _profile_url(entity_type, public_slug),
                 "text_provenance": "quoted_untrusted_register_data",
             }
             counts[plural] += 1
@@ -244,7 +388,11 @@ def _cohort_windows(files: Any) -> dict[str, dict[str, str]]:
     return {window: paths for window, paths in windows.items() if "stats" in paths}
 
 
-def build_worker_artifacts(live_root: str | Path) -> tuple[str, dict[str, bytes]]:
+def build_worker_artifacts(
+    live_root: str | Path,
+    public_slugs: dict[int, str] | None = None,
+    retired_firms: dict[str, int] | None = None,
+) -> tuple[str, dict[str, bytes]]:
     """Return (release_id, {relative object key: body}) for one consistent release.
 
     Keys are relative to the ``releases/{release_id}/{build_id}/`` prefix;
@@ -256,8 +404,19 @@ def build_worker_artifacts(live_root: str | Path) -> tuple[str, dict[str, bytes]
         raise StaticAssetError("manifest.json has no release_id")
     release_id = str(manifest["release_id"])
 
-    allowed = _search_allowlist(live, manifest)
-    scan_rows, shard_records, counts = _entity_records(live, manifest, allowed)
+    allowed, solo_links = _search_allowlist(live, manifest)
+    scan_rows, shard_records, counts = _entity_records(live, manifest, allowed, public_slugs or {}, solo_links)
+    # The export lists merged attorney URLs once it carries attorney-aliases.json;
+    # "firms" maps an attorney record the owner ruled a firm to that firm's id.
+    retired_attorneys: dict[str, str] = {}
+    firm_records: dict[str, int] = {}
+    if declared_checksum(manifest, "attorney-aliases.json") is not None:
+        payload = json.loads(_validated_bytes(live, manifest, "attorney-aliases.json"))
+        retired_attorneys = {str(k): str(v) for k, v in (payload.get("aliases") or {}).items()}
+        firm_records = {str(k): int(v) for k, v in (payload.get("firms") or {}).items()}
+    counts["retired_aliases"] = _add_retired_aliases(
+        scan_rows, {**firm_records, **(retired_firms or {})}, retired_attorneys
+    )
 
     objects: dict[str, bytes] = {}
     checksums: dict[str, str] = {}
@@ -295,6 +454,8 @@ def build_worker_artifacts(live_root: str | Path) -> tuple[str, dict[str, bytes]
         }
 
     add("assets/analytics_stats.json", _validated_bytes(live, manifest, "analytics_stats.json"))
+    if "coverage_table.json" in (manifest.get("global_files") or {}):
+        add("assets/coverage_table.json", _validated_bytes(live, manifest, "coverage_table.json"))
 
     add(
         "mcp-manifest.json",
@@ -357,6 +518,7 @@ def run_once(
     *,
     settle_seconds: float = 5.0,
     force: bool = False,
+    public_url_registry: str | Path | None = None,
 ) -> str | None:
     """Build, upload, and activate one release. Silent no-op when current.
 
@@ -374,12 +536,16 @@ def run_once(
     except (KeyError, TypeError, ValueError) as exc:
         raise StaticAssetError("Live manifest has no release_id") from exc
 
+    public_slugs, registry_digest = _public_firm_slugs(Path(public_url_registry) if public_url_registry else None)
     pointer = _pointer(store)
+    # The site build allocates public slugs after the export, so a registry
+    # change rebuilds the same release.
     if (
         not force
         and pointer is not None
         and pointer.get("release_id") == release_id
         and pointer.get("worker_schema") == WORKER_SCHEMA
+        and pointer.get("public_url_registry") == registry_digest
     ):
         return None
 
@@ -388,7 +554,8 @@ def run_once(
         if _read_manifest_bytes(live) != initial:
             raise StaticAssetError("Live release changed while settling; retrying later")
 
-    built_release, objects = build_worker_artifacts(live)
+    retired_firms = _retired_firm_aliases(Path(public_url_registry) if public_url_registry else None)
+    built_release, objects = build_worker_artifacts(live, public_slugs, retired_firms)
     if built_release != release_id or _read_manifest_bytes(live) != initial:
         raise StaticAssetError("Live release changed during build; retrying later")
 
@@ -406,6 +573,7 @@ def run_once(
                 "worker_schema": WORKER_SCHEMA,
                 "build_id": build_id,
                 "prefix": prefix,
+                "public_url_registry": registry_digest,
             }
         ),
     )
@@ -428,6 +596,12 @@ def main() -> None:
         default=Path(os.environ.get("IPRATE_MCP_LIVE_ROOT", "/live/data/v1")),
         help="Completed live /data/v1 export tree (read-only input)",
     )
+    parser.add_argument(
+        "--public-url-registry",
+        type=Path,
+        default=os.environ.get("IPRATE_MCP_PUBLIC_URL_REGISTRY") or None,
+        help="Site public URL registry (read-only); firm profile URLs use its slugs",
+    )
     parser.add_argument("--settle-seconds", type=float, default=5.0)
     parser.add_argument(
         "--force",
@@ -436,7 +610,13 @@ def main() -> None:
     )
     args = parser.parse_args()
     try:
-        run_once(args.live_root, R2Client(), settle_seconds=args.settle_seconds, force=args.force)
+        run_once(
+            args.live_root,
+            R2Client(),
+            settle_seconds=args.settle_seconds,
+            force=args.force,
+            public_url_registry=args.public_url_registry,
+        )
     except StaticAssetError as exc:
         _log("worker_release_retry", reason=str(exc))
         raise SystemExit(1) from exc

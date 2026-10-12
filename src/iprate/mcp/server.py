@@ -164,7 +164,7 @@ def get_ip_market_snapshot(
     title="Check IPRATE data coverage",
     description=(
         "Explain which static release cohorts support a jurisdiction and IP-right question. "
-        "Returns held, partial, or not-covered state, release assets, counts, fields, and incidents."
+        "Returns held, partial, or not-covered state, release assets, counts, and supported fields."
     ),
     annotations=READ_ONLY,
     structured_output=True,

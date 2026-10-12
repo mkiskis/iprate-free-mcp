@@ -83,12 +83,16 @@ services:
     env_file:
       - path: .r2.env
         required: false
+    environment:
+      IPRATE_MCP_PUBLIC_URL_REGISTRY: /live/profile-runtime/public-url-registry.json
     command:
       - iprate-free-mcp-build-worker-release
       - --live-root
       - /live/data/v1
     volumes:
       - ${IPRATE_STATIC_ROOT:-/home/ming/iprate-output/data/v1}:/live/data/v1:ro
+      # The site's public URL registry; a directory mount, so a missing file is never created as a directory.
+      - ${IPRATE_PROFILE_RUNTIME:-/srv/iprate/iprate/frontend/.profile-runtime}:/live/profile-runtime:ro
 
 networks:
   runtime:

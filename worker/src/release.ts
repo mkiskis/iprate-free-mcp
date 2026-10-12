@@ -14,7 +14,10 @@ export interface Env {
   RATE_LIMITER?: { limit(options: { key: string }): Promise<{ success: boolean }> };
   ASSET_BASE_URL?: string;
   STALE_AFTER_DAYS?: string;
+  // Shared with the Data API: signs the relayed end-client address (X-IPRATE-Worker-Signature).
   DATA_API_WORKER_SECRET?: string;
+  // Plain-text token issued by the OpenAI plugin portal for domain verification.
+  OPENAI_APPS_CHALLENGE?: string;
 }
 
 interface Pointer {
@@ -44,7 +47,9 @@ export interface McpManifest {
   checksums: Record<string, string>;
 }
 
-// Scan row: [type, id, slug, name_key, home_cc, shard, cohorts]
+// Scan row: [type, id, slug, name_key, home_cc, shard, cohorts, aliases?]
+// slug is the export key; public_slugs are the site URL slugs that redirect from it
+// and, for a solo practice, its attorney's slug (the person is the firm).
 // Cohort tuple: [jurisdiction, right(asset code), tier, window, rank, score, classes, client_keys]
 export type ScanCohort = [
   string,
@@ -56,7 +61,7 @@ export type ScanCohort = [
   string[],
   string[],
 ];
-export type ScanRow = [string, number, string, string, string | null, string, ScanCohort[]];
+export type ScanRow = [string, number, string, string, string | null, string, ScanCohort[], string[]?];
 
 interface SearchIndex {
   schema: number;
