@@ -12,6 +12,8 @@ enabled = true
 
 [vars]
 ASSET_BASE_URL = "https://iprate.eu/data/v1"
+# IPRATE QUOTES_ENABLED is live (2026-10-25): list prepare_quote_request and check_case_needs_rep.
+QUOTES_LIVE = "true"
 # Domain-verification token from the OpenAI plugin portal, served as plain text
 # at /.well-known/openai-apps-challenge. Keep it here once issued: wrangler
 # deploy replaces variables set only in the dashboard.
