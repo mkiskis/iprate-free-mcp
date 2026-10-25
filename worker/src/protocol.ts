@@ -4,6 +4,9 @@
 // schemas, and the 0.4.0 response cleanup exist in the Worker only.
 
 import type { Env } from "./release";
+import {
+  CASE_INPUT, CASE_OUTPUT, PREPARE_INPUT, PREPARE_OUTPUT, checkCaseNeedsRep, prepareQuoteRequest, quotesLive,
+} from "./quotes";
 import { type ToolOutput, fetchDocument, searchDocuments } from "./research";
 import {
   COVERAGE_OUTPUT,
@@ -39,7 +42,9 @@ interface ToolDefinition {
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
   annotations: typeof READ_ONLY;
-  handler: (env: Env, args: Record<string, unknown>) => Promise<ToolOutput>;
+  // Listed only when the IPRATE request-for-quotes surface is live (QUOTES_LIVE).
+  requiresQuotes?: boolean;
+  handler: (env: Env, args: Record<string, unknown>, clientIp?: string | null) => Promise<ToolOutput>;
 }
 
 function envelopeTool(
@@ -257,7 +262,36 @@ const TOOLS: ToolDefinition[] = [
     outputSchema: FETCH_OUTPUT,
     handler: (env, args) => fetchDocument(env, args),
   },
+  {
+    name: "prepare_quote_request",
+    title: "Prepare a request for quotes",
+    description:
+      "Use this when the user wants to hire a trade mark representative in Europe. It matches up to three firms " +
+      "with published IPRATE ratings per jurisdiction and returns a link where the user adds contact details and " +
+      "sends the request. Free for the user. Put no personal data in the description.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    inputSchema: PREPARE_INPUT,
+    outputSchema: PREPARE_OUTPUT,
+    requiresQuotes: true,
+    handler: (env, args, clientIp) => prepareQuoteRequest(env, args, clientIp),
+  },
+  {
+    name: "check_case_needs_rep",
+    title: "Check whether an opposed applicant needs a representative",
+    description:
+      "Use this for one EUIPO, UK IPO or Benelux application facing an opposition. Returns whether the applicant " +
+      "must or may appoint a representative and a link to quotes from rated firms.",
+    annotations: READ_ONLY,
+    inputSchema: CASE_INPUT,
+    outputSchema: CASE_OUTPUT,
+    requiresQuotes: true,
+    handler: (env, args, clientIp) => checkCaseNeedsRep(env, args, clientIp),
+  },
 ];
+
+function toolsFor(env: Env): ToolDefinition[] {
+  return TOOLS.filter((tool) => !tool.requiresQuotes || quotesLive(env));
+}
 
 interface RpcResult {
   status: number;
@@ -272,7 +306,7 @@ function rpcError(id: unknown, code: number, message: string, status = 200): Rpc
   return { status, payload: { jsonrpc: "2.0", id, error: { code, message } } };
 }
 
-export async function handleMcpPost(env: Env, body: unknown): Promise<RpcResult> {
+export async function handleMcpPost(env: Env, body: unknown, clientIp: string | null = null): Promise<RpcResult> {
   if (Array.isArray(body)) {
     return rpcError(null, -32600, "JSON-RPC batching is not supported", 400);
   }
@@ -325,16 +359,16 @@ export async function handleMcpPost(env: Env, body: unknown): Promise<RpcResult>
       return ok(message.id, {});
     case "tools/list":
       return ok(message.id, {
-        tools: TOOLS.map(({ handler: _handler, ...tool }) => tool),
+        tools: toolsFor(env).map(({ handler: _handler, requiresQuotes: _quotes, ...tool }) => tool),
       });
     case "tools/call": {
       const name = params.name;
-      const tool = TOOLS.find((candidate) => candidate.name === name);
+      const tool = toolsFor(env).find((candidate) => candidate.name === name);
       if (!tool) {
         return rpcError(message.id, -32602, `Unknown tool: ${String(name)}`);
       }
       const args = (params.arguments ?? {}) as Record<string, unknown>;
-      const output = await tool.handler(env, args);
+      const output = await tool.handler(env, args, clientIp);
       const result: Record<string, unknown> = {
         content: [{ type: "text", text: output.text ?? JSON.stringify(output.structured ?? {}) }],
         isError: output.isError === true,

@@ -26,7 +26,7 @@ async function post(
 
 afterEach(() => vi.restoreAllMocks());
 
-it("negotiates the paid protocol and lists exactly eight declared tools", async () => {
+it("negotiates the paid protocol and lists exactly fourteen declared tools", async () => {
   const initialized = await post({
     jsonrpc: "2.0",
     id: 1,
@@ -46,6 +46,12 @@ it("negotiates the paid protocol and lists exactly eight declared tools", async 
     "find_representative",
     "get_firm_profile",
     "create_watch",
+    "list_rep_needed_signals",
+    "list_prospects",
+    "client_movement",
+    "competitor_share",
+    "create_quote_requests",
+    "create_mark_watch",
   ]);
   expect(tools.find((tool: any) => tool.name === "create_watch").annotations.readOnlyHint).toBe(false);
   expect(tools.find((tool: any) => tool.name === "create_watch").annotations.idempotentHint).toBe(true);

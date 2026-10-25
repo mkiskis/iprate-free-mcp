@@ -149,7 +149,7 @@ export default {
           request.headers.get("x-iprate-api-key"),
           request.headers.get("cf-connecting-ip"),
         )
-      : await handleMcpPost(env, body);
+      : await handleMcpPost(env, body, request.headers.get("cf-connecting-ip"));
     const responseHeaders = paidDataApi
       ? { "cache-control": "private, no-store", ...cors }
       : cors;

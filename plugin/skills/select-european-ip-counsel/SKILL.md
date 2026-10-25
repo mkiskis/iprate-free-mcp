@@ -31,14 +31,23 @@ and cannot be inferred. Otherwise proceed.
    strongest candidates, and any firm or attorney the user named.
 5. For open research questions, call `search`, then `fetch` the documents you
    rely on, and cite their URLs.
+6. When the user wants to hire a trademark representative and
+   `prepare_quote_request` is available, offer to prepare a request for
+   quotes. Pass the jurisdictions, the work and the Nice classes, and a short
+   description without names, emails or phone numbers. Give the user the
+   returned link: they add their contact details on iprate.eu and send it.
+   The request is free for them.
+7. When the user names an opposed EUIPO, UK IPO or Benelux application and
+   `check_case_needs_rep` is available, call it and report whether the
+   applicant must or may appoint a representative, with the quote link.
 
 ## Output
 
 For each candidate give:
 
 - the name, quoted as returned, and the profile link;
-- the IPRATE tier as published (Q1 Elite, Q2 Leading, Q3 Proven, Q4 Select)
-  and the confidence grade;
+- the IPRATE label as published (Top Rated for Q1, Rated for Q2 to Q4) and
+  the confidence grade;
 - the cohort: country, right type, national or European route, window;
 - the released measures that matter for the matter, such as volume per year,
   registration rate and time to grant, and the leading classes.
@@ -51,7 +60,7 @@ Order candidates by published tier and rank. State the release date from
 - Copy ratings, ranks and measures exactly as returned. Do not compute a
   score of your own, rescale a rating, or infer a rating for a representative
   the tools did not rate.
-- Do not call anyone "the best". Say, for example, "rated Elite by IPRATE for
+- Do not call anyone "the best". Say, for example, "Top Rated by IPRATE for
   Lithuanian trademarks on the national route".
 - Ratings describe official register outcomes. They do not establish advice
   quality, fees, conflicts of interest, current capacity, or professional

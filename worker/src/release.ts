@@ -18,6 +18,8 @@ export interface Env {
   DATA_API_WORKER_SECRET?: string;
   // Plain-text token issued by the OpenAI plugin portal for domain verification.
   OPENAI_APPS_CHALLENGE?: string;
+  // "true" lists prepare_quote_request and check_case_needs_rep (IPRATE QUOTES_ENABLED live).
+  QUOTES_LIVE?: string;
 }
 
 interface Pointer {
