@@ -69,6 +69,20 @@ it("routes the intelligence tools to the key holder's own firm endpoints", async
   }
 });
 
+it("routes the enforcer tools to the Data API", async () => {
+  const call = upstream({ data: {} });
+  for (const [name, args, path] of [
+    ["list_enforcers", { office: "GB" }, "/enforcers?office=GB"],
+    ["get_enforcer_profile", { name: "Snap Inc." }, "/enforcers/profile?name=Snap+Inc."],
+    ["get_enforcement_benchmark", { names: ["Snap Inc.", "Meta Platforms, Inc."] },
+      "/enforcers/benchmark?names=Snap+Inc.%3BMeta+Platforms%2C+Inc."],
+  ] as const) {
+    await rpc("/data-api/mcp", { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name, arguments: args } },
+      { "x-iprate-api-key": "ipk_test" });
+    expect(String(call.mock.calls.at(-1)![0])).toBe(`https://app.iprate.eu/api/v1${path}`);
+  }
+});
+
 it("hides the free quote tools until QUOTES_LIVE is true", async () => {
   const hidden = await rpc("/mcp", { jsonrpc: "2.0", id: 4, method: "tools/list", params: {} });
   expect(hidden.result.tools.map((t: any) => t.name)).not.toContain("prepare_quote_request");

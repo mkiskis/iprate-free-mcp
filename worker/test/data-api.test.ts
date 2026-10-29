@@ -50,6 +50,9 @@ it("negotiates the paid protocol and lists exactly fourteen declared tools", asy
     "list_prospects",
     "client_movement",
     "competitor_share",
+    "list_enforcers",
+    "get_enforcer_profile",
+    "get_enforcement_benchmark",
     "create_quote_requests",
     "create_mark_watch",
   ]);
